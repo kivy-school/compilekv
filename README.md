@@ -147,3 +147,24 @@ The Swift package builds as a WASI reactor exporting:
 | `kv_convert(kv_ptr, kv_len, py_ptr, py_len) -> status` | convert; 0 on success, 1 on error |
 | `kv_result_ptr()` / `kv_result_len()` | the generated source, or the error message |
 | `kv_result_free()` | release the result buffer |
+
+### `root` and bindings
+
+`root` in KV is the widget the rule applies to, so it becomes `self`:
+
+```kv
+<Card>:
+    Label:
+        text: root.title
+```
+
+```python
+label_1.text = self.title
+self.bind(title=label_1.setter("text"))
+```
+
+The `bind` call is only emitted when the attribute is a Kivy property --
+declared in the KV rule, inherited from a base widget, or assigned in your
+`.py` as `title = StringProperty("")`. A plain Python attribute gets the
+assignment alone, because `bind()` on a non-property raises. In a mixed
+expression the bindable names are bound and the rest are read once.

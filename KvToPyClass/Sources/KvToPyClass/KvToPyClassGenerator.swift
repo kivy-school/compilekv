@@ -35,14 +35,7 @@ class PropertyExpressionVisitor: ExpressionVisitor {
     }
     
     func visitCall(_ node: Call) {
-        // Handle str(app.prop) patterns
-        if case .name(let funcName) = node.fun, funcName.id == "str" {
-            // Visit arguments to extract watched keys
-            for arg in node.args {
-                visitExpression(arg)
-            }
-        }
-        // Visit the function expression and arguments
+        // Covers str(app.prop) and any other wrapping call.
         visitExpression(node.fun)
         for arg in node.args {
             visitExpression(arg)
@@ -203,6 +196,68 @@ private func replaceAttributeWithNameRef(_ expr: PySwiftAST.Expression, object: 
     }
 }
 
+/// Rewrite `root` to `self` in an expression tree.
+///
+/// `root` in KV is the widget the rule applies to; in the generated __init__
+/// that is the instance being built. Event handlers already did this, property
+/// values did not, so `text: root.name` emitted an undefined `root`.
+private func replaceRootWithSelf(_ expr: PySwiftAST.Expression) -> PySwiftAST.Expression {
+    func rename(_ name: Name) -> Name {
+        guard name.id == "root" else { return name }
+        return Name(id: "self", ctx: name.ctx, lineno: name.lineno, colOffset: name.colOffset, endLineno: name.endLineno, endColOffset: name.endColOffset)
+    }
+    
+    switch expr {
+    case .name(let node):
+        return .name(rename(node))
+        
+    case .attribute(let node):
+        return .attribute(Attribute(
+            value: replaceRootWithSelf(node.value),
+            attr: node.attr,
+            ctx: node.ctx,
+            lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
+        ))
+        
+    case .joinedStr(let node):
+        return .joinedStr(JoinedStr(
+            values: node.values.map(replaceRootWithSelf),
+            lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
+        ))
+        
+    case .formattedValue(let node):
+        return .formattedValue(FormattedValue(
+            value: replaceRootWithSelf(node.value),
+            conversion: node.conversion,
+            formatSpec: node.formatSpec,
+            lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
+        ))
+        
+    case .call(let node):
+        return .call(Call(
+            fun: replaceRootWithSelf(node.fun),
+            args: node.args.map(replaceRootWithSelf),
+            keywords: node.keywords.map { Keyword(arg: $0.arg, value: replaceRootWithSelf($0.value)) },
+            lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
+        ))
+        
+    case .tuple(let node):
+        return .tuple(Tuple(elts: node.elts.map(replaceRootWithSelf), ctx: node.ctx, lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        
+    case .list(let node):
+        return .list(List(elts: node.elts.map(replaceRootWithSelf), ctx: node.ctx, lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        
+    case .binOp(let node):
+        return .binOp(BinOp(left: replaceRootWithSelf(node.left), op: node.op, right: replaceRootWithSelf(node.right), lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        
+    case .ifExp(let node):
+        return .ifExp(IfExp(test: replaceRootWithSelf(node.test), body: replaceRootWithSelf(node.body), orElse: replaceRootWithSelf(node.orElse), lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        
+    default:
+        return expr
+    }
+}
+
 /// Replace all self.* attribute accesses with instance.* in an expression tree
 /// Used for canvas bindings where the lambda should use the current instance state
 private func replaceAllSelfWithInstance(_ expr: PySwiftAST.Expression) -> PySwiftAST.Expression {
@@ -257,6 +312,13 @@ private func replaceAllSelfWithInstance(_ expr: PySwiftAST.Expression) -> PySwif
 /// Previously these came from `UUID()`, which meant every run produced a
 /// different file for the same input. Numbering restarts for each class so
 /// adding a widget to one rule does not renumber the rest of the file.
+/// The rule currently being generated: which class, and which of its
+/// properties can be bound to.
+private final class RuleContext {
+    var baseClasses: [String] = []
+    var selfProperties = Swift.Set<String>()
+}
+
 private final class NameCounter {
     private var next = 0
 
@@ -283,6 +345,9 @@ public struct KvToPyClassGenerator {
     /// merged into this rather than replacing it.
     private let existingBody: [Statement]
     private let nameCounter = NameCounter()
+    /// Set per rule, so the deep child helpers can answer "is self.x bindable?"
+    /// without threading the rule through every signature.
+    private let ruleContext = RuleContext()
     
     /// Track bindings that need to be unbound in __del__
     private struct BindingInfo {
@@ -685,6 +750,11 @@ public struct KvToPyClassGenerator {
         
         // Generate class body with properties and children
         nameCounter.reset()
+        ruleContext.baseClasses = baseClasses
+        ruleContext.selfProperties = pythonClasses.first(where: { $0.name == className })?.kivyProperties ?? []
+        // Properties this rule declares are emitted as ObjectProperty below,
+        // so they are bindable too.
+        ruleContext.selfProperties.formUnion(getCustomProperties(for: rule, baseClasses: baseClasses))
         var body: [Statement] = []
         
         // Add initial blank line at the start of class body
@@ -1264,19 +1334,45 @@ public struct KvToPyClassGenerator {
             if case .module(let statements) = module,
                let firstStmt = statements.first,
                case .assign(let assign) = firstStmt {
-                let expr = assign.value
+                let expr = replaceRootWithSelf(assign.value)
                 
                 // Use visitor to extract watched keys
                 let visitor = PropertyExpressionVisitor()
                 visitor.visitExpression(expr)
-                return (expr, visitor.watchedKeys)
+                return (expr, bindableKeys(visitor.watchedKeys))
             }
         } catch {
             // If parsing fails, fall back to the pre-computed watchedKeys
-            return (nil, property.watchedKeys ?? [])
+            return (nil, bindableKeys(property.watchedKeys ?? []))
         }
         
-        return (nil, property.watchedKeys ?? [])
+        return (nil, bindableKeys(property.watchedKeys ?? []))
+    }
+    
+    /// Watched keys with `root` renamed to `self`, dropping the ones that are
+    /// not Kivy properties.
+    ///
+    /// `self.x` only binds when `x` is a property -- declared in the KV rule,
+    /// inherited from a base widget, or assigned in the existing .py as
+    /// `x = StringProperty(...)`. A plain Python attribute raises in
+    /// `bind()`, so those get the initial assignment and nothing more.
+    private func bindableKeys(_ keys: [[String]]) -> [[String]] {
+        var seen = Swift.Set<[String]>()
+        return keys.compactMap { key -> [String]? in
+            guard key.count == 2 else { return key }
+            let object = key[0] == "root" ? "self" : key[0]
+            if object == "self", !isBindableSelfProperty(key[1]) { return nil }
+            // One expression can name the same property more than once; it
+            // still only needs binding once.
+            return seen.insert([object, key[1]]).inserted ? [object, key[1]] : nil
+        }
+    }
+    
+    private func isBindableSelfProperty(_ name: String) -> Bool {
+        if ruleContext.selfProperties.contains(name) { return true }
+        return ruleContext.baseClasses.contains { base in
+            KivyWidgetRegistry.getPropertyType(name, on: base) != nil
+        }
     }
     
     private func isEventHandler(_ property: KvProperty) -> Bool {
@@ -1363,7 +1459,8 @@ public struct KvToPyClassGenerator {
     }
     
     private func generateBindingCall(_ property: KvProperty, targetName: String = "self") -> Statement? {
-        guard let watchedKeys = property.watchedKeys, !watchedKeys.isEmpty else {
+        let watchedKeys = bindableKeys(property.watchedKeys ?? [])
+        guard !watchedKeys.isEmpty else {
             return nil
         }
         
@@ -1463,12 +1560,12 @@ public struct KvToPyClassGenerator {
     /// Similar to generateBindingCall but for child widget properties
     /// Returns tuple of (statements, bindings) - statements to execute and bindings to track
     private func generateChildPropertyBinding(_ property: KvProperty, widgetVarName: String, callbackCounter: inout Int) -> ([Statement], [BindingInfo]) {
-        guard let watchedKeys = property.watchedKeys, !watchedKeys.isEmpty else {
+        // Parse the expression to get the AST; watched keys come back with
+        // `root` renamed and unbindable attributes dropped.
+        let (parsedExpr, watchedKeys) = parsePropertyExpression(property)
+        guard !watchedKeys.isEmpty else {
             return ([], [])
         }
-        
-        // Parse the expression to get the AST
-        let (parsedExpr, _) = parsePropertyExpression(property)
         
         // Check if this is a truly simple binding: single watched key AND direct attribute access (not wrapped in function calls)
         let isSimpleBinding: Bool
