@@ -7,24 +7,38 @@ from pathlib import Path
 from .runtime import KvCompiler, default_compiler
 
 
-def output_path_for(kv_path: Path) -> Path:
-    return kv_path.with_suffix(".py")
+def output_path_for(kv_path: str | Path, output: str | Path | None = None) -> Path:
+    """Where `kv_path` is written. `output` may be a directory or a file name."""
+    kv_path = Path(kv_path)
+    if output is None:
+        return kv_path.with_suffix(".py")
+    output = Path(output)
+    if output.is_dir() or not output.suffix:
+        return output / kv_path.with_suffix(".py").name
+    return output
+
+
+def source_path_for(kv_path: str | Path) -> Path:
+    """The hand written .py beside the .kv, whose contents get extended."""
+    return Path(kv_path).with_suffix(".py")
 
 
 def compile_file(
     kv_path: str | Path,
-    output_path: str | Path | None = None,
+    output: str | Path | None = None,
     compiler: KvCompiler | None = None,
 ) -> Path:
-    """Compile one .kv, feeding in the existing .py so its methods carry over."""
+    """Compile one .kv, extending the .py next to it. Returns the file written."""
     kv_path = Path(kv_path)
-    target = Path(output_path) if output_path is not None else output_path_for(kv_path)
+    target = output_path_for(kv_path, output)
     compiler = compiler or default_compiler()
 
-    kv_source = kv_path.read_text(encoding="utf-8")
-    py_source = target.read_text(encoding="utf-8") if target.is_file() else ""
+    source = source_path_for(kv_path)
+    py_source = source.read_text(encoding="utf-8") if source.is_file() else ""
 
-    generated = compiler.compile_source(kv_source, py_source)
+    generated = compiler.compile_source(kv_path.read_text(encoding="utf-8"), py_source)
+
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(generated, encoding="utf-8")
     return target
 
@@ -40,12 +54,20 @@ def find_kv_files(root: str | Path, recursive: bool = True) -> list[Path]:
 
 def compile_tree(
     root: str | Path,
+    output_dir: str | Path | None = None,
     recursive: bool = True,
     compiler: KvCompiler | None = None,
 ) -> list[Path]:
-    """Compile every .kv under `root`. Returns the files written."""
+    """Compile every .kv under `root` into `output_dir`. Returns what was written."""
+    root = Path(root)
     compiler = compiler or default_compiler()
-    return [
-        compile_file(kv_path, compiler=compiler)
-        for kv_path in find_kv_files(root, recursive=recursive)
-    ]
+
+    written = []
+    for kv_path in find_kv_files(root, recursive=recursive):
+        target = None
+        if output_dir is not None:
+            # Mirror the tree under root so same-named .kv files cannot collide.
+            relative = kv_path.parent.relative_to(root) if root.is_dir() else Path()
+            target = Path(output_dir) / relative
+        written.append(compile_file(kv_path, target, compiler=compiler))
+    return written

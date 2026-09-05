@@ -30,15 +30,41 @@ compilekv is a library. Import it and call the helpers:
 ```python
 from compilekv import compile_file, compile_tree, find_kv_files
 
-compile_tree("ui/")            # every .kv under a directory
-compile_file("ui/style.kv")    # one file
+compile_tree("ui/")                    # every .kv under a directory, in place
+compile_tree("ui/", "build/")          # ... or into a separate tree
+compile_file("ui/style.kv")            # one file
+compile_file("ui/style.kv", "build/")  # ... written to build/style.py
 ```
 
-Each `style.kv` compiles to `style.py` beside it. When that `.py` already
-exists its contents are handed to the generator, so hand written methods carry
-over. Output is deterministic and regenerating is idempotent -- compiling twice
+Each `style.kv` compiles to `style.py`. Give an output directory and the tree
+under the input is mirrored into it, so `ui/panels/style.kv` becomes
+`build/panels/style.py` and same-named files in different directories cannot
+collide. Pass a path with a suffix instead and it is used verbatim as the file
+name.
+
+### Extending, not replacing
+
+The `.py` **next to the `.kv`** is the source. It is read whether or not you
+compile into a separate output directory, and the result is that file with the
+generated code folded in: imports the rules need are added to the ones already
+there, a class the KV defines replaces the same-named class in place, and rules
+with no matching class are appended. Everything else -- module docstring,
+constants, helper functions, unrelated classes, hand written methods -- stays
+where you put it.
+
+A `<Name>:` rule styles a class that already exists, so its bases come from
+your Python; `<Name@Base>:` declares them inline. With neither, it falls back
+to `Widget`.
+
+Output is deterministic and regenerating is idempotent -- compiling twice
 leaves the files byte for byte identical, which keeps generated code reviewable
 in version control.
+
+One consequence of extending rather than replacing: compiling **in place**,
+where the source and the output are the same file, cannot tell a class it
+emitted last run from one you wrote, so deleting a rule leaves its class
+behind. Compile into an output directory for a file that only ever reflects
+the current `.kv`.
 
 For direct control over the strings, skipping the file layer entirely:
 
@@ -76,6 +102,9 @@ Secondary, for one-off runs. No console script is installed.
 ```console
 $ python -m compilekv [paths...] [-o OUT] [--no-recursive] [-q]
 ```
+
+`-o` is a directory when the input is one, mirroring its layout, and may be a
+file name when compiling a single `.kv`.
 
 ## Tests
 

@@ -279,6 +279,9 @@ public struct KvToPyClassGenerator {
     
     private let module: KvModule
     private let pythonClasses: [PythonClassInfo]
+    /// Body of the existing .py file, if one was supplied. Generated code is
+    /// merged into this rather than replacing it.
+    private let existingBody: [Statement]
     private let nameCounter = NameCounter()
     
     /// Track bindings that need to be unbound in __del__
@@ -288,25 +291,28 @@ public struct KvToPyClassGenerator {
         let callbackVar: String     // e.g., "_callback_0"
     }
     
-    public init(module: KvModule, pythonClasses: [PythonClassInfo] = []) {
+    public init(module: KvModule, pythonClasses: [PythonClassInfo] = [], existingBody: [Statement] = []) {
         self.module = module
         self.pythonClasses = pythonClasses
+        self.existingBody = existingBody
+    }
+
+    public init(module: KvModule, existing: PythonModuleInfo) {
+        self.init(module: module, pythonClasses: existing.classes, existingBody: existing.body)
     }
     
     /// Generate Python code for all dynamic classes and rules
     public func generate() throws -> String {
-        var statements: [Statement] = []
-        
-        // Collect all widget types that need to be imported
-        let widgetTypes = collectWidgetTypes()
-        
-        // Add imports
-        statements.append(contentsOf: generateImports(for: widgetTypes))
-        
-        // Generate class definitions for rules and templates
+        let imports = generateImports(for: collectWidgetTypes())
+
+        var generatedClasses: [Statement] = []
         for rule in module.rules {
-            statements.append(contentsOf: try generateClassForRule(rule))
+            generatedClasses.append(contentsOf: try generateClassForRule(rule))
         }
+
+        let statements = existingBody.isEmpty
+            ? imports + generatedClasses
+            : merge(imports: imports, classes: generatedClasses, into: existingBody)
         
         // Convert to Python source code
         let pyModule = Module.module(statements)
@@ -318,6 +324,121 @@ public struct KvToPyClassGenerator {
         let code = try formatModule(formattedModule)
         
         return code
+    }
+    
+    // MARK: - Merging Into An Existing File
+    
+    /// Fold generated imports and classes into the body of the existing .py.
+    ///
+    /// Imports land after the ones already there, classes replace the
+    /// same-named definition in place, and everything else the file had --
+    /// docstring, constants, helper functions, unrelated classes -- is left
+    /// exactly where the author put it.
+    private func merge(imports: [Statement], classes: [Statement], into body: [Statement]) -> [Statement] {
+        let alreadyBound = importedNames(in: body)
+        let newImports = imports.compactMap { dropAliases(boundIn: alreadyBound, from: $0) }
+        
+        var generated: [String: Statement] = [:]
+        for statement in classes {
+            if case .classDef(let classDef) = statement {
+                generated[classDef.name] = statement
+            }
+        }
+        
+        var result: [Statement] = []
+        var used = Swift.Set<String>()
+        for statement in body {
+            if case .classDef(let classDef) = statement,
+               let replacement = generated[classDef.name] {
+                result.append(replacement)
+                used.insert(classDef.name)
+            } else {
+                result.append(statement)
+            }
+        }
+        
+        // Rules with no matching class in the file are appended in KV order.
+        for statement in classes {
+            if case .classDef(let classDef) = statement, !used.contains(classDef.name) {
+                result.append(statement)
+            }
+        }
+        
+        let insertAt = importInsertionPoint(in: result)
+        result.insert(contentsOf: newImports, at: insertAt)
+        return separateImportBlock(in: result, endingAt: insertAt + newImports.count)
+    }
+    
+    /// One blank line after the imports. BlackFormatter only spaces defs and
+    /// classes, so without this a following constant butts up against them.
+    private func separateImportBlock(in body: [Statement], endingAt index: Int) -> [Statement] {
+        guard index > 0, index < body.count else { return body }
+        switch body[index] {
+        case .blank, .classDef, .functionDef, .asyncFunctionDef:
+            return body
+        default:
+            var spaced = body
+            spaced.insert(.blank(1), at: index)
+            return spaced
+        }
+    }
+    
+    /// Every module level name an import statement binds, so we do not add an
+    /// import for something the file already brings in (under any alias).
+    private func importedNames(in body: [Statement]) -> Swift.Set<String> {
+        var names = Swift.Set<String>()
+        for statement in body {
+            switch statement {
+            case .importStmt(let node):
+                for alias in node.names {
+                    names.insert(alias.asName ?? alias.name.split(separator: ".").first.map(String.init) ?? alias.name)
+                }
+            case .importFrom(let node):
+                for alias in node.names {
+                    names.insert(alias.asName ?? alias.name)
+                }
+            default:
+                break
+            }
+        }
+        return names
+    }
+    
+    /// Strip aliases already bound; returns nil when nothing is left to import.
+    private func dropAliases(boundIn bound: Swift.Set<String>, from statement: Statement) -> Statement? {
+        guard case .importFrom(let node) = statement else { return statement }
+        let keep = node.names.filter { !bound.contains($0.asName ?? $0.name) }
+        if keep.isEmpty { return nil }
+        if keep.count == node.names.count { return statement }
+        return .importFrom(ImportFrom(
+            module: node.module,
+            names: keep,
+            level: node.level,
+            lineno: node.lineno,
+            colOffset: node.colOffset,
+            endLineno: nil,
+            endColOffset: nil
+        ))
+    }
+    
+    /// Just after the file's existing imports, or after its docstring.
+    private func importInsertionPoint(in body: [Statement]) -> Int {
+        var index = 0
+        for (offset, statement) in body.enumerated() {
+            switch statement {
+            case .importStmt, .importFrom:
+                index = offset + 1
+            case .expr(let expr) where offset == 0:
+                if case .constant(let constant) = expr.value, case .string = constant.value {
+                    index = 1
+                }
+            case .blank:
+                continue
+            default:
+                break
+            }
+        }
+        return index
     }
     
     // MARK: - Helpers
@@ -356,17 +477,13 @@ public struct KvToPyClassGenerator {
         
         // Now collect widget types, excluding custom ones
         for rule in module.rules {
-            switch rule.selector {
-            case .dynamicClass(_, let bases):
-                // Only add base classes that aren't custom widgets
-                for base in bases where !customWidgets.contains(base) {
+            // The resolved bases, so the implicit `Widget` fallback gets
+            // imported too. Bases the existing .py already provides are
+            // dropped later when the generated imports are merged into it.
+            if let resolved = resolvedClass(for: rule) {
+                for base in resolved.bases where !customWidgets.contains(base) {
                     types.insert(base)
                 }
-            case .name(_):
-                // Skip this name itself since it's a custom widget
-                break
-            default:
-                break
             }
             // Collect from children, excluding custom widgets
             collectTypesFromChildren(rule.children, into: &types, excluding: customWidgets)
@@ -476,15 +593,9 @@ public struct KvToPyClassGenerator {
         var types = Swift.Set<String>()
         
         for rule in module.rules {
-            let baseClasses: [String]
-            switch rule.selector {
-            case .dynamicClass(_, let bases):
-                baseClasses = bases.isEmpty ? ["Widget"] : bases
-            default:
-                continue
-            }
+            guard let resolved = resolvedClass(for: rule) else { continue }
             
-            let customProps = getCustomProperties(for: rule, baseClasses: baseClasses)
+            let customProps = getCustomProperties(for: rule, baseClasses: resolved.bases)
             if !customProps.isEmpty {
                 // Add ObjectProperty as default type for custom properties
                 types.insert("ObjectProperty")
@@ -543,33 +654,34 @@ public struct KvToPyClassGenerator {
     
     // MARK: - Class Generation
     
-    private func generateClassForRule(_ rule: KvRule) throws -> [Statement] {
-        let selector = rule.selector
-        
-        // Extract class name and base classes from selector
-        let (className, baseClasses): (String, [String])
-        switch selector {
+    /// The class a rule defines and what it inherits from.
+    ///
+    /// A `<Name>:` rule styles a class that already exists in Python, so its
+    /// bases come from that file; `<Name@Base>:` declares them inline. Falling
+    /// back to `Widget` matches what Kivy's own Builder does.
+    private func resolvedClass(for rule: KvRule) -> (name: String, bases: [String])? {
+        switch rule.selector {
         case .dynamicClass(let name, let bases):
-            className = name
-            // Check if we have Python class info for this class
-            if let pythonClass = pythonClasses.first(where: { $0.name == name }) {
-                // Use base classes from Python code if they exist
-                baseClasses = pythonClass.baseClasses.isEmpty ? (bases.isEmpty ? ["Widget"] : bases) : pythonClass.baseClasses
-            } else {
-                baseClasses = bases.isEmpty ? ["Widget"] : bases
+            if let pythonClass = pythonClasses.first(where: { $0.name == name }),
+               !pythonClass.baseClasses.isEmpty {
+                return (name, pythonClass.baseClasses)
             }
+            return (name, bases.isEmpty ? ["Widget"] : bases)
         case .name(let name):
-            // For simple name selectors, check Python code first
-            className = name
-            if let pythonClass = pythonClasses.first(where: { $0.name == name }) {
-                baseClasses = pythonClass.baseClasses.isEmpty ? ["Widget"] : pythonClass.baseClasses
-            } else {
-                baseClasses = ["Widget"]
+            if let pythonClass = pythonClasses.first(where: { $0.name == name }),
+               !pythonClass.baseClasses.isEmpty {
+                return (name, pythonClass.baseClasses)
             }
+            return (name, ["Widget"])
         case .className, .multiple:
-            // These selector types don't generate classes
-            return []
+            return nil
         }
+    }
+    
+    private func generateClassForRule(_ rule: KvRule) throws -> [Statement] {
+        guard let resolved = resolvedClass(for: rule) else { return [] }
+        let className = resolved.name
+        let baseClasses = resolved.bases
         
         // Generate class body with properties and children
         nameCounter.reset()

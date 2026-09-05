@@ -179,8 +179,14 @@ def test_compile_tree_returns_paths_in_discovery_order(project, compiler):
     assert written == [output_path_for(p) for p in find_kv_files(project)]
 
 
-def test_compile_file_overwrites_a_stale_generated_file(tmp_path, compiler):
-    """Removing a rule drops its class."""
+def test_writing_in_place_keeps_a_class_whose_rule_was_removed(tmp_path, compiler):
+    """In place, the file is extended, so nothing is deleted from it.
+
+    Once generated output and hand written source are the same file there is
+    no way to tell a class we emitted last run from one the author added, so
+    dropping a rule leaves its class behind. Compile into a separate output
+    directory to get a file that only ever reflects the current .kv.
+    """
     kv = tmp_path / "two.kv"
     kv.write_text(SIMPLE_KV + "\n<Extra@Label>:\n    text: 'gone soon'\n")
     target = compile_file(kv, compiler=compiler)
@@ -189,4 +195,150 @@ def test_compile_file_overwrites_a_stale_generated_file(tmp_path, compiler):
     kv.write_text(SIMPLE_KV)
     compile_file(kv, compiler=compiler)
 
+    assert "class Extra(Label):" in target.read_text()
+
+
+def test_output_directory_drops_a_class_whose_rule_was_removed(tmp_path, compiler):
+    """With a separate output dir the source .py is untouched, so nothing lingers."""
+    kv = tmp_path / "two.kv"
+    out = tmp_path / "build"
+    kv.write_text(SIMPLE_KV + "\n<Extra@Label>:\n    text: 'gone soon'\n")
+    target = compile_file(kv, out, compiler=compiler)
+    assert "class Extra(Label):" in target.read_text()
+
+    kv.write_text(SIMPLE_KV)
+    compile_file(kv, out, compiler=compiler)
+
     assert "class Extra(Label):" not in target.read_text()
+
+
+# --- Output directories ---------------------------------------------------
+
+
+def test_output_path_for_treats_a_suffixless_path_as_a_directory(tmp_path):
+    assert output_path_for(tmp_path / "a.kv", tmp_path / "build") == tmp_path / "build" / "a.py"
+
+
+def test_output_path_for_keeps_an_explicit_file_name(tmp_path):
+    assert output_path_for(tmp_path / "a.kv", tmp_path / "out.py") == tmp_path / "out.py"
+
+
+def test_output_directory_names_each_file_after_its_kv(tmp_path, compiler):
+    (tmp_path / "abc.kv").write_text(SIMPLE_KV)
+    (tmp_path / "xyz.kv").write_text(CHILDREN_KV)
+    out = tmp_path / "build"
+
+    written = compile_tree(tmp_path, out, compiler=compiler)
+
+    assert sorted(p.name for p in written) == ["abc.py", "xyz.py"]
+    assert all(p.parent == out for p in written)
+
+
+def test_output_directory_mirrors_nested_layout(project, compiler):
+    out = project / "build"
+    written = compile_tree(project, out, compiler=compiler)
+    relative = sorted(str(p.relative_to(out)) for p in written)
+    assert relative == sorted(
+        str(kv.relative_to(project).with_suffix(".py")) for kv in find_kv_files(project)
+    )
+
+
+def test_output_directory_is_created(tmp_path, compiler):
+    (tmp_path / "a.kv").write_text(SIMPLE_KV)
+    target = compile_file(tmp_path / "a.kv", tmp_path / "deep" / "nested", compiler=compiler)
+    assert target == tmp_path / "deep" / "nested" / "a.py"
+    assert target.is_file()
+
+
+def test_output_directory_leaves_the_source_py_alone(tmp_path, compiler):
+    (tmp_path / "a.kv").write_text(SIMPLE_KV)
+    source = tmp_path / "a.py"
+    source.write_text("MARKER = 1\n")
+
+    compile_file(tmp_path / "a.kv", tmp_path / "build", compiler=compiler)
+
+    assert source.read_text() == "MARKER = 1\n"
+
+
+def test_the_kv_neighbour_is_the_source_even_with_an_output_dir(tmp_path, compiler):
+    """abc.py next to abc.kv is what gets extended, not whatever is in the output."""
+    (tmp_path / "abc.kv").write_text(SIMPLE_KV)
+    (tmp_path / "abc.py").write_text("MARKER = 1\n")
+
+    target = compile_file(tmp_path / "abc.kv", tmp_path / "build", compiler=compiler)
+
+    assert target.name == "abc.py"
+    assert "MARKER = 1" in target.read_text()
+
+
+# --- Extending the existing module ---------------------------------------
+
+
+EXISTING_PY = '''"""Docstring."""
+
+import os
+from kivy.uix.boxlayout import BoxLayout
+
+MAX = 10
+
+
+def helper():
+    return os.getcwd()
+
+
+class Other:
+    pass
+
+
+class UserProfile(BoxLayout):
+    def save_profile(self):
+        return MAX
+'''
+
+EXISTING_KV = """\
+<UserProfile>:
+    orientation: 'vertical'
+    Label:
+        text: 'hi'
+"""
+
+
+@pytest.fixture
+def extended(tmp_path, compiler):
+    (tmp_path / "app.kv").write_text(EXISTING_KV)
+    (tmp_path / "app.py").write_text(EXISTING_PY)
+    return compile_file(tmp_path / "app.kv", tmp_path / "build", compiler=compiler).read_text()
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    ["import os", "MAX = 10", "def helper():", "return os.getcwd()", "class Other:"],
+)
+def test_module_level_code_is_preserved(extended, fragment):
+    assert fragment in extended
+
+
+def test_base_class_comes_from_the_existing_python(extended):
+    assert "class UserProfile(BoxLayout):" in extended
+
+
+def test_existing_imports_are_not_duplicated(extended):
+    assert extended.count("from kivy.uix.boxlayout import BoxLayout") == 1
+
+
+def test_needed_imports_are_added(extended):
+    assert "from kivy.uix.label import Label" in extended
+
+
+def test_the_result_is_valid_python(extended):
+    import ast
+
+    ast.parse(extended)
+
+
+def test_a_widget_base_is_imported(tmp_path, compiler):
+    """<Name>: with no Python class falls back to Widget, which must be imported."""
+    (tmp_path / "a.kv").write_text("<Orphan>:\n    Label:\n        text: 'x'\n")
+    generated = compile_file(tmp_path / "a.kv", compiler=compiler).read_text()
+    assert "class Orphan(Widget):" in generated
+    assert "from kivy.uix.widget import Widget" in generated

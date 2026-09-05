@@ -24,7 +24,8 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "-o",
         "--output",
-        help="Output file, only valid when compiling a single KV file.",
+        help="Output directory, or a file name when compiling a single KV file. "
+        "Defaults to writing next to each .kv.",
     )
     parser.add_argument(
         "--no-recursive",
@@ -39,32 +40,40 @@ def run(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    kv_files: list[Path] = []
-    for path in args.paths:
-        target = Path(path)
-        if not target.exists():
-            print(f"error: {target} does not exist", file=sys.stderr)
+    roots = [Path(path) for path in args.paths]
+    for root in roots:
+        if not root.exists():
+            print(f"error: {root} does not exist", file=sys.stderr)
             return 1
-        kv_files.extend(find_kv_files(target, recursive=not args.no_recursive))
 
-    if not kv_files:
+    if not any(find_kv_files(root, recursive=not args.no_recursive) for root in roots):
         print("No .kv files found.", file=sys.stderr)
-        return 1
-
-    if args.output and len(kv_files) != 1:
-        print("error: --output requires exactly one KV file", file=sys.stderr)
         return 1
 
     compiler = default_compiler()
     failures = 0
-    for kv_path in kv_files:
-        try:
-            written = compile_file(kv_path, args.output, compiler=compiler)
-        except KvCompileError as error:
-            print(f"error: {kv_path}: {error}", file=sys.stderr)
-            failures += 1
-            continue
-        if not args.quiet:
-            print(f"{kv_path} -> {written}")
+    for root in roots:
+        for kv_path in find_kv_files(root, recursive=not args.no_recursive):
+            try:
+                written = compile_file(
+                    kv_path,
+                    _target_for(kv_path, root, args.output),
+                    compiler=compiler,
+                )
+            except KvCompileError as error:
+                print(f"error: {kv_path}: {error}", file=sys.stderr)
+                failures += 1
+                continue
+            if not args.quiet:
+                print(f"{kv_path} -> {written}")
 
     return 1 if failures else 0
+
+
+def _target_for(kv_path: Path, root: Path, output: str | None) -> Path | None:
+    """A directory input means a directory output, mirroring the tree under it."""
+    if output is None:
+        return None
+    if root.is_file():
+        return Path(output)
+    return Path(output) / kv_path.parent.relative_to(root)

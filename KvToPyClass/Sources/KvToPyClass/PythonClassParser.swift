@@ -16,6 +16,17 @@ public struct PythonClassInfo {
     }
 }
 
+/// A parsed Python file: its whole module body plus the classes in it.
+public struct PythonModuleInfo {
+    public let body: [Statement]
+    public let classes: [PythonClassInfo]
+
+    public init(body: [Statement], classes: [PythonClassInfo]) {
+        self.body = body
+        self.classes = classes
+    }
+}
+
 /// Parser to extract class information from Python source code using PySwiftAST
 public struct PythonClassParser {
     
@@ -27,25 +38,25 @@ public struct PythonClassParser {
     
     /// Parse the Python source and extract class definitions using PySwiftAST
     public func parse() -> [PythonClassInfo] {
-        var classes: [PythonClassInfo] = []
-        
+        parseModule().classes
+    }
+
+    /// Parse the source, keeping the module body so the generator can extend
+    /// the original file instead of replacing it.
+    public func parseModule() -> PythonModuleInfo {
         do {
-            // Parse the Python source code into an AST
             let astModule = try parsePython(source)
-           
-            // Extract class definitions from the statements
+            var classes: [PythonClassInfo] = []
             for statement in astModule.body {
                 if case .classDef(let classDef) = statement {
-                    let classInfo = extractClassInfo(from: classDef)
-                    classes.append(classInfo)
+                    classes.append(extractClassInfo(from: classDef))
                 }
             }
+            return PythonModuleInfo(body: astModule.body, classes: classes)
         } catch {
             print("Error parsing Python code: \(error)")
-            // Return empty array if parsing fails
+            return PythonModuleInfo(body: [], classes: [])
         }
-        
-        return classes
     }
     
     /// Extract class information from a ClassDef AST node
