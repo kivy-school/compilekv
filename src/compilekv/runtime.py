@@ -17,6 +17,25 @@ from wasmtime import Engine, Instance, Linker, Module, Store, WasiConfig
 WASM_FILENAME = "compilekv.wasm"
 
 
+_default_compiler: "KvCompiler | None" = None
+_default_lock = threading.Lock()
+
+
+def default_compiler() -> "KvCompiler":
+    """The process-wide compiler shared by the module level helpers.
+
+    Every importer of compilekv ends up on this one instance, so the wasm module
+    is compiled and instantiated once no matter how many modules use the package
+    or how often they call it. It is safe to share: conversions are serialized
+    on the instance's own lock.
+    """
+    global _default_compiler
+    with _default_lock:
+        if _default_compiler is None:
+            _default_compiler = KvCompiler()
+        return _default_compiler
+
+
 class KvCompileError(RuntimeError):
     """Raised when the wasm module fails to convert a KV source string."""
 

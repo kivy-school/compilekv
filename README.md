@@ -10,36 +10,57 @@ wheel architecture independent — one `py3-none-any` wheel runs everywhere.
 
 ## Usage
 
-```console
-$ compilekv                     # compile every .kv under the current directory
-$ compilekv ui/ widgets/        # specific directories
-$ compilekv style.kv -o out.py  # a single file
-$ compilekv . --no-recursive
+compilekv is a library. Import it and call the helpers:
+
+```python
+from compilekv import compile_file, compile_tree, find_kv_files
+
+compile_tree("ui/")            # every .kv under a directory
+compile_file("ui/style.kv")    # one file
 ```
 
 Each `style.kv` compiles to `style.py` beside it. When that `.py` already
 exists its contents are handed to the generator, so hand written methods carry
-over. Output is deterministic and regenerating is idempotent -- running
-`compilekv` twice leaves the files byte for byte identical, which keeps
-generated code reviewable in version control.
+over. Output is deterministic and regenerating is idempotent -- compiling twice
+leaves the files byte for byte identical, which keeps generated code reviewable
+in version control.
 
-As a library:
+For direct control over the strings, skipping the file layer entirely:
 
 ```python
-from compilekv import KvCompiler, compile_file, compile_tree
+from compilekv import default_compiler
 
-compile_tree("ui/")                     # walk a directory
-compile_file("ui/style.kv")             # one file
-
-compiler = KvCompiler()                 # reuse for many conversions
-python_source = compiler.compile_source(kv_source, existing_py_source)
+python_source = default_compiler().compile_source(kv_source, existing_py_source)
 ```
 
+`compile_source` raises `KvCompileError` with the parser's message when the KV
+is invalid.
+
+### One wasm module per process
+
 Compiling the wasm module takes a few seconds against ~3 ms per conversion, so
-it is cached per process: the first `KvCompiler` pays for it and later ones
-instantiate in milliseconds, each with its own isolated memory. Reusing a single
-compiler is still marginally cheaper. `compile_source` raises `KvCompileError`
-with the parser's message when the KV is invalid.
+it happens once. `default_compiler()` returns a process-wide instance shared by
+every caller, so any number of modules can import compilekv and convert as often
+as they like without reloading:
+
+```python
+# module_a.py                      # module_b.py
+from compilekv import compile_file  import compilekv
+compile_file("a.kv")                compilekv.compile_file("b.kv")
+# ^ pays the load                   # ^ ~1 ms, same instance
+```
+
+Conversions are serialized on the instance's own lock, so sharing it across
+threads is safe. `KvCompiler()` still builds an isolated instance with its own
+linear memory when you want one; the compiled module is cached either way.
+
+### Command line
+
+Secondary, for one-off runs. No console script is installed.
+
+```console
+$ python -m compilekv [paths...] [-o OUT] [--no-recursive] [-q]
+```
 
 ## Tests
 

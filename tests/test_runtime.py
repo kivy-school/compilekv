@@ -119,3 +119,34 @@ def test_compiled_module_is_cached_across_instances():
 
     assert after.hits == before.hits + 1
     assert after.misses == before.misses
+
+
+def test_default_compiler_is_shared():
+    """Every importer must land on one instance, not one per call site."""
+    from compilekv import default_compiler
+
+    assert default_compiler() is default_compiler()
+
+
+def test_module_helpers_reuse_the_default_compiler(tmp_path, monkeypatch):
+    """compile_file must not build a fresh compiler on each call."""
+    import compilekv.runtime as runtime
+    from compilekv import compile_file, default_compiler
+
+    default_compiler()  # ensure it exists before we start counting
+    built = 0
+    real = runtime.KvCompiler
+
+    def counting(*args, **kwargs):
+        nonlocal built
+        built += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(runtime, "KvCompiler", counting)
+
+    for name in ("a", "b", "c"):
+        kv = tmp_path / f"{name}.kv"
+        kv.write_text(SIMPLE_KV)
+        compile_file(kv)
+
+    assert built == 0

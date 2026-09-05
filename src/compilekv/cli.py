@@ -1,4 +1,7 @@
-"""Command line entry point for compilekv."""
+"""Argument parsing for `python -m compilekv`.
+
+A thin wrapper over the library in `compiler.py`, which is the real interface.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +10,10 @@ import sys
 from pathlib import Path
 
 from .compiler import compile_file, find_kv_files
-from .runtime import KvCompileError, KvCompiler
+from .runtime import KvCompileError, default_compiler
 
 
-def main(argv: list[str] | None = None) -> int:
+def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="compilekv",
         description="Compile Kivy KV files into Python classes using the CompileKvWasm module.",
@@ -55,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         print("error: --output requires exactly one KV file", file=sys.stderr)
         return 1
 
-    compiler = KvCompiler()
+    compiler = default_compiler()
     failures = 0
     for kv_path in kv_files:
         try:
@@ -68,7 +71,3 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{kv_path} -> {written}")
 
     return 1 if failures else 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .runtime import KvCompiler
+from .runtime import KvCompiler, default_compiler
 
 
 def output_path_for(kv_path: Path) -> Path:
@@ -24,7 +24,7 @@ def compile_file(
     """
     kv_path = Path(kv_path)
     target = Path(output_path) if output_path is not None else output_path_for(kv_path)
-    compiler = compiler or KvCompiler()
+    compiler = compiler or default_compiler()
 
     kv_source = kv_path.read_text(encoding="utf-8")
     py_source = target.read_text(encoding="utf-8") if target.is_file() else ""
@@ -49,7 +49,7 @@ def compile_tree(
     compiler: KvCompiler | None = None,
 ) -> list[Path]:
     """Compile every ``.kv`` file under `root`, returning the files written."""
-    compiler = compiler or KvCompiler()
+    compiler = compiler or default_compiler()
     return [
         compile_file(kv_path, compiler=compiler)
         for kv_path in find_kv_files(root, recursive=recursive)
