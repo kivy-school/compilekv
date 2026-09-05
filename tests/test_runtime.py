@@ -14,6 +14,33 @@ def test_wasm_asset_ships_with_the_package():
     assert path.read_bytes()[:4] == b"\0asm"
 
 
+def test_distribution_is_platform_independent():
+    """The reason the conversion is wasm and not a native binary.
+
+    A native Swift build would need a wheel per platform; this must stay one
+    pure-Python wheel that imports anywhere.
+    """
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    try:
+        wheel = distribution("compilekv").read_text("WHEEL")
+    except PackageNotFoundError:  # pragma: no cover - running from a source tree
+        pytest.skip("compilekv is not installed as a distribution")
+    if wheel is None:  # pragma: no cover - editable install
+        pytest.skip("no WHEEL metadata available")
+
+    assert "Root-Is-Purelib: true" in wheel
+    assert "Tag: py3-none-any" in wheel
+
+
+def test_no_compiled_extensions_are_shipped():
+    """Only the wasm asset is binary; nothing is compiled for a host arch."""
+    package_dir = _default_wasm_path().parent
+    suffixes = {p.suffix for p in package_dir.iterdir() if p.is_file()}
+
+    assert not suffixes & {".so", ".dylib", ".dll", ".pyd"}
+
+
 def test_missing_wasm_raises_a_useful_error(tmp_path):
     with pytest.raises(FileNotFoundError, match="wasm module not found"):
         KvCompiler(tmp_path / "nope.wasm")

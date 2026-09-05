@@ -1,8 +1,9 @@
 """Thin wrapper around the CompileKvWasm WebAssembly module.
 
 The Swift side is a WASI *reactor*: it exposes a handful of functions and never
-runs a ``main``. All file access lives here on the Python side -- the wasm module
-only ever receives and returns strings.
+runs an entry point of its own. All file access lives on the Python side -- the
+wasm module only ever receives and returns strings, which is what keeps the
+package importable on any platform rather than tied to a native build.
 """
 
 from __future__ import annotations

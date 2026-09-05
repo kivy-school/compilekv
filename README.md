@@ -1,12 +1,27 @@
 # compilekv
 
-Compile Kivy `.kv` files into plain Python classes, so widgets can be built
-without `Builder`.
+**An importable Python module.** `import compilekv` and call it from your own
+code — a build step, an editor plugin, a test fixture, whatever. It compiles
+Kivy `.kv` files into plain Python classes, so widgets can be built without
+`Builder`.
 
-The conversion itself is [KvToPyClass](../KvToPyClass), a Swift package, compiled
-to a WebAssembly module. Python drives it: it walks the tree, reads the files,
-and writes the results. The wasm module only ever sees strings, which keeps the
-wheel architecture independent — one `py3-none-any` wheel runs everywhere.
+## Why WebAssembly
+
+The conversion is [KvToPyClass](../KvToPyClass), a Swift package. Shipping that
+as a native binary would mean a wheel per platform, built on a machine with a
+Swift toolchain, and no wheel at all for anything you did not build for — which
+is fine for a command line tool you install yourself, and useless for a module
+other people import.
+
+Compiled to wasm instead, the conversion is just data: one
+`compilekv-0.1.0-py3-none-any.whl` that installs and imports anywhere Python
+runs. Python owns the filesystem — it walks the tree, reads the `.kv` and any
+existing `.py`, and writes the result. The wasm module only ever sees and
+returns strings, so nothing in it is platform specific.
+
+The one native piece is the `wasmtime` runtime, which publishes wheels for
+macOS (x86_64, arm64), Linux (x86_64, aarch64; glibc and musl), Windows
+(amd64, arm64) and Android.
 
 ## Usage
 
