@@ -47,10 +47,28 @@ name.
 The `.py` **next to the `.kv`** is the source. It is read whether or not you
 compile into a separate output directory, and the result is that file with the
 generated code folded in: imports the rules need are added to the ones already
-there, a class the KV defines replaces the same-named class in place, and rules
-with no matching class are appended. Everything else -- module docstring,
-constants, helper functions, unrelated classes, hand written methods -- stays
-where you put it.
+there, a class the KV defines is merged with the same-named class in place, and
+rules with no matching class are appended. Everything else -- module docstring,
+constants, helper functions, unrelated classes -- stays where you put it.
+
+Inside a class the author's body is the starting point, so properties,
+annotations, the class docstring, nested classes and hand written methods all
+survive. A generated method replaces the one it shares a name with, with one
+exception: `__init__` is **appended to**, not replaced. Your setup runs first,
+then the widget tree:
+
+```python
+def __init__(self, **kwargs):
+    super().__init__(**kwargs)
+    self.counter = 0          # yours
+    self._bindings = []       # generated from here down
+    self.orientation = "vertical"
+    ...
+```
+
+Your signature and your `super()` call are the ones kept. Everything from
+`self._bindings = []` onwards is treated as output from a previous run and
+replaced, which is what keeps regenerating from stacking copies of the tree.
 
 A `<Name>:` rule styles a class that already exists, so its bases come from
 your Python; `<Name@Base>:` declares them inline. With neither, it falls back

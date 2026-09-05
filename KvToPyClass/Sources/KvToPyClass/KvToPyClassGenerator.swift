@@ -574,6 +574,17 @@ public struct KvToPyClassGenerator {
         return separateImportBlock(in: result, endingAt: insertAt + newImports.count + newAliases.count)
     }
     
+    /// Names bound by a plain assignment, annotation, def or class.
+    private func boundNames(in body: [Statement]) -> Swift.Set<String> {
+        var names = assignedNames(in: body)
+        for statement in body {
+            if case .annAssign(let annotated) = statement, case .name(let target) = annotated.target {
+                names.insert(target.id)
+            }
+        }
+        return names
+    }
+    
     /// Module level names bound by a plain assignment or a class definition.
     private func assignedNames(in body: [Statement]) -> Swift.Set<String> {
         var names = Swift.Set<String>()
@@ -964,27 +975,10 @@ public struct KvToPyClassGenerator {
             }
         }
         
-        // Add any additional methods from Python code (as AST nodes)
-        //
-        // Methods generated above win over same-named ones read back from the
-        // existing Python file, so regenerating over previously generated
-        // output carries over hand written methods without duplicating
-        // `__del__` or the event handlers.
+        // Fold the generated members into the class the author wrote, rather
+        // than the other way round, so everything in it survives.
         if let pythonClass = pythonClasses.first(where: { $0.name == className }) {
-            var generatedMethodNames = Swift.Set<String>()
-            for statement in body {
-                if case .functionDef(let funcDef) = statement {
-                    generatedMethodNames.insert(funcDef.name)
-                }
-            }
-            for method in pythonClass.methods {
-                if case .functionDef(let funcDef) = method,
-                   generatedMethodNames.contains(funcDef.name) {
-                    continue
-                }
-                // Directly append the method AST nodes from the parsed Python code
-                body.append(method)
-            }
+            body = mergeClassBody(body, into: pythonClass.classDefAST.body)
         }
         
         let bases: [PySwiftAST.Expression] = baseClasses.map { name in
@@ -1005,6 +999,149 @@ public struct KvToPyClassGenerator {
         )
         
         return [.classDef(classStmt)]
+    }
+    
+    /// Merge generated members into the existing class body.
+    ///
+    /// The author's body is the starting point, so properties, annotations,
+    /// the docstring, nested classes and anything else stay put. A generated
+    /// method replaces the one it shares a name with, except `__init__`, which
+    /// is appended to rather than replaced.
+    private func mergeClassBody(_ generated: [Statement], into existing: [Statement]) -> [Statement] {
+        var generatedFunctions: [String: FunctionDef] = [:]
+        for statement in generated {
+            if case .functionDef(let function) = statement {
+                generatedFunctions[function.name] = function
+            }
+        }
+        
+        var result: [Statement] = []
+        var replaced = Swift.Set<String>()
+        for statement in existing {
+            switch statement {
+            case .functionDef(let existingFunction):
+                guard let generatedFunction = generatedFunctions[existingFunction.name] else {
+                    result.append(statement)
+                    continue
+                }
+                replaced.insert(existingFunction.name)
+                result.append(.functionDef(
+                    existingFunction.name == "__init__"
+                        ? mergedInit(existing: existingFunction, generated: generatedFunction)
+                        : generatedFunction
+                ))
+            case .pass:
+                // The class has real content now.
+                continue
+            default:
+                result.append(statement)
+            }
+        }
+        
+        let bound = boundNames(in: existing)
+        for statement in generated {
+            switch statement {
+            case .blank:
+                continue
+            case .functionDef(let function) where replaced.contains(function.name):
+                continue
+            case .assign(let assign):
+                // Never shadow a property the author declared themselves.
+                if case .name(let target) = assign.targets.first, bound.contains(target.id) {
+                    continue
+                }
+            default:
+                break
+            }
+            result.append(statement)
+        }
+        
+        if result.isEmpty {
+            return [.pass(Pass(lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil))]
+        }
+        return separateNestedClasses(in: openWithBlankLine(result))
+    }
+    
+    /// A class body opens with a blank line, matching what is generated when
+    /// there is no existing class to merge into -- otherwise the first run and
+    /// the second would differ. A docstring goes flush against the header, and
+    /// BlackFormatter puts the blank after it.
+    private func openWithBlankLine(_ body: [Statement]) -> [Statement] {
+        switch body.first {
+        case .blank:
+            return body
+        case .expr(let expr) where isStringConstant(expr.value):
+            return body
+        default:
+            return [.blank(1)] + body
+        }
+    }
+    
+    private func isStringConstant(_ expr: PySwiftAST.Expression) -> Bool {
+        guard case .constant(let constant) = expr, case .string = constant.value else { return false }
+        return true
+    }
+    
+    /// A blank line before a nested class. BlackFormatter spaces methods but
+    /// not classes inside a class body.
+    private func separateNestedClasses(in body: [Statement]) -> [Statement] {
+        var spaced: [Statement] = []
+        for statement in body {
+            if case .classDef = statement, let previous = spaced.last {
+                if case .blank = previous {} else { spaced.append(.blank(1)) }
+            }
+            spaced.append(statement)
+        }
+        return spaced
+    }
+    
+    /// Append the generated __init__ body to the one already there.
+    ///
+    /// Everything from `self._bindings = []` onwards was written by a previous
+    /// run -- nothing else emits that line -- so it is dropped first, which is
+    /// what keeps regeneration from stacking copies of the widget tree. The
+    /// author's signature and their super() call are the ones that survive.
+    private func mergedInit(existing: FunctionDef, generated: FunctionDef) -> FunctionDef {
+        var handWritten = existing.body
+        if let marker = handWritten.firstIndex(where: isBindingsInit) {
+            handWritten = Array(handWritten[..<marker])
+        }
+        
+        return FunctionDef(
+            name: existing.name,
+            args: existing.args,
+            body: handWritten + generated.body.filter { !isSuperInit($0) },
+            decoratorList: existing.decoratorList,
+            returns: existing.returns,
+            typeComment: existing.typeComment,
+            typeParams: existing.typeParams,
+            lineno: existing.lineno, colOffset: existing.colOffset,
+            endLineno: existing.endLineno, endColOffset: existing.endColOffset
+        )
+    }
+    
+    /// `self._bindings = []`
+    private func isBindingsInit(_ statement: Statement) -> Bool {
+        guard case .assign(let assign) = statement,
+              case .attribute(let target) = assign.targets.first,
+              target.attr == "_bindings",
+              case .name(let object) = target.value,
+              object.id == "self"
+        else { return false }
+        return true
+    }
+    
+    /// `super().__init__(...)`
+    private func isSuperInit(_ statement: Statement) -> Bool {
+        guard case .expr(let expr) = statement,
+              case .call(let call) = expr.value,
+              case .attribute(let callee) = call.fun,
+              callee.attr == "__init__",
+              case .call(let inner) = callee.value,
+              case .name(let superName) = inner.fun,
+              superName.id == "super"
+        else { return false }
+        return true
     }
     
     private func getCustomProperties(for rule: KvRule, baseClasses: [String]) -> Swift.Set<String> {
