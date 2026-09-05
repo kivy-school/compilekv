@@ -168,3 +168,27 @@ declared in the KV rule, inherited from a base widget, or assigned in your
 `.py` as `title = StringProperty("")`. A plain Python attribute gets the
 assignment alone, because `bind()` on a non-property raises. In a mixed
 expression the bindable names are bound and the rest are read once.
+
+### Factory registration
+
+Every generated class is registered, so other KV files and `Builder` can
+resolve it by name:
+
+```python
+Factory.register("MyButton", cls=MyButton)
+```
+
+Existing registrations in your `.py` are left alone rather than duplicated.
+
+A widget the KV references that Kivy does not ship and this module does not
+define is assumed to be a custom widget registered elsewhere, so it is taken
+off the Factory instead of guessed at with a `kivy.uix` import:
+
+```python
+MyWidget = Factory.MyWidget
+```
+
+This is a plain constant, not `type MyWidget = Factory.MyWidget`. The PEP 695
+form resolves lazily, which would be nicer, but a `TypeAliasType` is not
+callable and the generated code has to construct the widget. The constant is
+read at import time, so the widget must be registered by then.

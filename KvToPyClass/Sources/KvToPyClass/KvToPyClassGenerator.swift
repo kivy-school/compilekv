@@ -368,16 +368,40 @@ public struct KvToPyClassGenerator {
     
     /// Generate Python code for all dynamic classes and rules
     public func generate() throws -> String {
-        let imports = generateImports(for: collectWidgetTypes())
-
+        // Widgets Kivy ships get imported; anything else is a custom widget
+        // from somewhere we cannot see, so it comes off the Factory.
+        let widgetTypes = collectWidgetTypes()
+        let external = widgetTypes.filter { !KivyWidgetRegistry.widgetExists($0) && !isDefinedHere($0) }
+        
         var generatedClasses: [Statement] = []
         for rule in module.rules {
             generatedClasses.append(contentsOf: try generateClassForRule(rule))
         }
-
+        
+        let registrations = factoryRegistrations(for: generatedClasses)
+        let needsFactory = !external.isEmpty || !registrations.isEmpty
+        
+        var imports = generateImports(for: widgetTypes.subtracting(external))
+        if needsFactory {
+            imports.append(.importFrom(ImportFrom(
+                module: "kivy.factory",
+                names: [Alias(name: "Factory", asName: nil)],
+                level: 0,
+                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+            )))
+        }
+        
+        let aliases = external.sorted().map(factoryAlias)
+        
         let statements = existingBody.isEmpty
-            ? imports + generatedClasses
-            : merge(imports: imports, classes: generatedClasses, into: existingBody)
+            ? imports + aliases + generatedClasses + registrations
+            : merge(
+                imports: imports,
+                aliases: aliases,
+                classes: generatedClasses,
+                registrations: registrations,
+                into: existingBody
+            )
         
         // Convert to Python source code
         let pyModule = Module.module(statements)
@@ -391,6 +415,83 @@ public struct KvToPyClassGenerator {
         return code
     }
     
+    // MARK: - Factory
+    
+    /// Is this name a class the generated module defines, or one already in
+    /// the .py we are extending?
+    private func isDefinedHere(_ name: String) -> Bool {
+        if pythonClasses.contains(where: { $0.name == name }) { return true }
+        return module.rules.contains { resolvedClass(for: $0)?.name == name }
+    }
+    
+    /// `MyWidget = Factory.MyWidget`
+    ///
+    /// A plain module constant so the name can be called: a PEP 695
+    /// `type MyWidget = Factory.MyWidget` builds a TypeAliasType, which
+    /// resolves lazily but is not callable, so `MyWidget(...)` would fail.
+    /// The cost is that the Factory is read at import time, which means the
+    /// widget has to be registered by then.
+    private func factoryAlias(_ name: String) -> Statement {
+        .assign(Assign(
+            targets: [.name(Name(id: name, ctx: .store, lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil))],
+            value: .attribute(Attribute(
+                value: .name(makeName("Factory")),
+                attr: name,
+                ctx: .load,
+                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+            )),
+            typeComment: nil,
+            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+        ))
+    }
+    
+    /// `Factory.register("MyWidget", cls=MyWidget)` for each generated class,
+    /// so other KV files and Builder can resolve it by name.
+    private func factoryRegistrations(for classes: [Statement]) -> [Statement] {
+        let registered = alreadyRegistered(in: existingBody)
+        var statements: [Statement] = []
+        for statement in classes {
+            guard case .classDef(let classDef) = statement, !registered.contains(classDef.name) else {
+                continue
+            }
+            statements.append(.expr(Expr(
+                value: .call(Call(
+                    fun: .attribute(Attribute(
+                        value: .name(makeName("Factory")),
+                        attr: "register",
+                        ctx: .load,
+                        lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                    )),
+                    args: [.constant(makeConstant(.string(classDef.name)))],
+                    keywords: [Keyword(arg: "cls", value: .name(makeName(classDef.name)))],
+                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                )),
+                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+            )))
+        }
+        return statements
+    }
+    
+    /// Names the file already passes to Factory.register, under any spelling
+    /// of the first argument.
+    private func alreadyRegistered(in body: [Statement]) -> Swift.Set<String> {
+        var names = Swift.Set<String>()
+        for statement in body {
+            guard case .expr(let expr) = statement,
+                  case .call(let call) = expr.value,
+                  case .attribute(let callee) = call.fun,
+                  callee.attr == "register",
+                  case .name(let target) = callee.value,
+                  target.id == "Factory",
+                  let first = call.args.first,
+                  case .constant(let constant) = first,
+                  case .string(let name) = constant.value
+            else { continue }
+            names.insert(name)
+        }
+        return names
+    }
+    
     // MARK: - Merging Into An Existing File
     
     /// Fold generated imports and classes into the body of the existing .py.
@@ -399,9 +500,25 @@ public struct KvToPyClassGenerator {
     /// same-named definition in place, and everything else the file had --
     /// docstring, constants, helper functions, unrelated classes -- is left
     /// exactly where the author put it.
-    private func merge(imports: [Statement], classes: [Statement], into body: [Statement]) -> [Statement] {
+    private func merge(
+        imports: [Statement],
+        aliases: [Statement],
+        classes: [Statement],
+        registrations: [Statement],
+        into body: [Statement]
+    ) -> [Statement] {
         let alreadyBound = importedNames(in: body)
         let newImports = imports.compactMap { dropAliases(boundIn: alreadyBound, from: $0) }
+        
+        // A Factory alias is only needed for a name the file does not already
+        // bind, whether by import, assignment or class definition.
+        let boundAtModuleLevel = alreadyBound.union(assignedNames(in: body))
+        let newAliases = aliases.filter { statement in
+            guard case .assign(let assign) = statement,
+                  case .name(let target) = assign.targets.first
+            else { return true }
+            return !boundAtModuleLevel.contains(target.id)
+        }
         
         var generated: [String: Statement] = [:]
         for statement in classes {
@@ -429,9 +546,34 @@ public struct KvToPyClassGenerator {
             }
         }
         
+        // Registrations name the classes, so they go last.
+        result.append(contentsOf: registrations)
+        
         let insertAt = importInsertionPoint(in: result)
-        result.insert(contentsOf: newImports, at: insertAt)
-        return separateImportBlock(in: result, endingAt: insertAt + newImports.count)
+        result.insert(contentsOf: newImports + newAliases, at: insertAt)
+        return separateImportBlock(in: result, endingAt: insertAt + newImports.count + newAliases.count)
+    }
+    
+    /// Module level names bound by a plain assignment or a class definition.
+    private func assignedNames(in body: [Statement]) -> Swift.Set<String> {
+        var names = Swift.Set<String>()
+        for statement in body {
+            switch statement {
+            case .assign(let assign):
+                for target in assign.targets {
+                    if case .name(let name) = target { names.insert(name.id) }
+                }
+            case .classDef(let classDef):
+                names.insert(classDef.name)
+            case .functionDef(let funcDef):
+                names.insert(funcDef.name)
+            case .typeAlias(let alias):
+                if case .name(let name) = alias.name { names.insert(name.id) }
+            default:
+                break
+            }
+        }
+        return names
     }
     
     /// One blank line after the imports. BlackFormatter only spaces defs and
