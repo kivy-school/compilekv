@@ -106,3 +106,16 @@ def test_generated_names_are_numbered_not_random(compiler):
     output = compiler.compile_source(CHILDREN_KV)
     assert "label_1 = Label(" in output
     assert "button_2 = Button(" in output
+
+
+def test_compiled_module_is_cached_across_instances():
+    """Compiling the wasm is the slow part; it must happen once per process."""
+    from compilekv.runtime import _compile_module
+
+    KvCompiler()
+    before = _compile_module.cache_info()
+    KvCompiler()
+    after = _compile_module.cache_info()
+
+    assert after.hits == before.hits + 1
+    assert after.misses == before.misses

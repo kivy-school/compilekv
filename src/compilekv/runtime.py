@@ -8,6 +8,7 @@ only ever receives and returns strings.
 from __future__ import annotations
 
 import threading
+from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 
@@ -23,6 +24,23 @@ class KvCompileError(RuntimeError):
 def _default_wasm_path() -> Path:
     """Locate the wasm asset shipped inside the wheel."""
     return Path(str(resources.files(__package__).joinpath(WASM_FILENAME)))
+
+
+@lru_cache(maxsize=None)
+def _compile_module(path: str, fingerprint: tuple[int, int]) -> tuple[Engine, Module]:
+    """Compile the wasm file once per process.
+
+    Compiling the module to native code takes a couple of seconds, while
+    instantiating an already compiled one takes milliseconds. Engines and
+    compiled modules are shareable, so the cost is paid once even when several
+    KvCompilers are created; each still gets its own Store and linear memory.
+
+    `fingerprint` is the file's (mtime, size), so rebuilding the module during a
+    long lived process picks up the new file instead of the cached one.
+    """
+    del fingerprint  # only present to key the cache
+    engine = Engine()
+    return engine, Module.from_file(engine, path)
 
 
 class KvCompiler:
@@ -42,13 +60,14 @@ class KvCompiler:
         self.wasm_path = path
         self._lock = threading.Lock()
 
-        engine = Engine()
+        stat = path.stat()
+        engine, module = _compile_module(str(path), (stat.st_mtime_ns, stat.st_size))
+
         self._store = Store(engine)
         self._store.set_wasi(WasiConfig())
 
         linker = Linker(engine)
         linker.define_wasi()
-        module = Module.from_file(engine, str(path))
         self._instance: Instance = linker.instantiate(self._store, module)
 
         exports = self._instance.exports(self._store)

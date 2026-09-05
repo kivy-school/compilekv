@@ -35,8 +35,10 @@ compiler = KvCompiler()                 # reuse for many conversions
 python_source = compiler.compile_source(kv_source, existing_py_source)
 ```
 
-Loading the wasm module is the expensive part, so reuse one `KvCompiler` when
-converting more than a single file. `compile_source` raises `KvCompileError`
+Compiling the wasm module takes a few seconds against ~3 ms per conversion, so
+it is cached per process: the first `KvCompiler` pays for it and later ones
+instantiate in milliseconds, each with its own isolated memory. Reusing a single
+compiler is still marginally cheaper. `compile_source` raises `KvCompileError`
 with the parser's message when the KV is invalid.
 
 ## Tests
@@ -46,7 +48,8 @@ $ COMPILEKV_SKIP_WASM_BUILD=1 uv run --group dev pytest
 ```
 
 Drop the environment variable to rebuild the wasm module first. The suite covers
-the wasm ABI, the file walking layer, and the CLI.
+the wasm ABI, the file walking layer, and the CLI, and finishes with a round trip
+that prints both inputs and the generated output.
 
 ## Building from source
 
