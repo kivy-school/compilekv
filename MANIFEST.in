@@ -4,7 +4,12 @@ include plan.md
 include scripts/build_wasm.py
 recursive-include CompileKvWasm/Sources *.swift
 include CompileKvWasm/Package.swift
+recursive-include KvToPyClass/Sources *.swift
+recursive-include KvToPyClass/Tests *.swift
+include KvToPyClass/Package.swift
 global-exclude *.py[cod]
 prune CompileKvWasm/.build
+prune KvToPyClass/.build
+exclude KvToPyClass/Package.resolved
 exclude src/compilekv/*.wasm
 recursive-include tests *.py

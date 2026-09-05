@@ -13,8 +13,7 @@ let package = Package(
         )
     ],
     dependencies: [
-        // Relative reference to the local KvToPyClass package for now.
-        .package(path: "../../KvToPyClass")
+        .package(path: "../KvToPyClass")
     ],
     targets: [
         .executableTarget(

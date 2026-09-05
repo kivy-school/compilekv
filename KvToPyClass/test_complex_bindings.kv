@@ -1,0 +1,22 @@
+<ComplexWidget@BoxLayout>:
+    orientation: 'vertical'
+    
+    Label:
+        text: app.title
+        font_size: 24
+        
+    BoxLayout:
+        Button:
+            text: 'Save'
+            on_press: self.save_data()
+        Button:
+            text: 'Load'
+            on_press: self.load_data()
+        Button:
+            text: 'Clear'
+            on_release: root.clear_all()
+            
+    TextInput:
+        id: my_input
+        text: app.current_text
+        on_text: root.on_text_changed(self.text)

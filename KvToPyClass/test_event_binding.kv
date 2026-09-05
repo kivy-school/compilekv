@@ -1,0 +1,46 @@
+<BoxLayout>:
+    orientation: "vertical"
+    $0<GridLayout>:
+    cols: 2
+    $0<AnchorLayout>:
+    anchor_x: "center"
+    anchor_y: "center"
+    $0<RelativeLayout>:
+    $0TabbedPanel:
+    do_default_tab: False
+    $0Carousel:
+    direction: "right"
+    $0<UserProfile@BoxLayout>:
+    orientation: 'vertical'
+    spacing: 10
+    padding: 20
+    
+    Label:
+        text: 'User Profile'
+        font_size: 24
+        size_hint_y: None
+        height: 40
+        
+    BoxLayout:
+        orientation: 'horizontal'
+        spacing: 10
+        Label:
+            text: 'Name:'
+            size_hint_x: 0.3
+        TextInput:
+            id: name_input
+            multiline: False
+            
+    BoxLayout:
+        orientation: 'horizontal'
+        spacing: 10
+        Label:
+            text: 'Email:'
+            size_hint_x: 0.3
+        TextInput:
+            id: email_input
+            multiline: False
+    
+    MyButton:
+        text: 'Save Profile'
+        on_press: self.save_profile()

@@ -7,7 +7,7 @@ Kivy `.kv` files into plain Python classes, so widgets can be built without
 
 ## Why WebAssembly
 
-The conversion is [KvToPyClass](../KvToPyClass), a Swift package. Shipping that
+The conversion is [KvToPyClass](KvToPyClass/), a Swift package. Shipping that
 as a native binary would mean a wheel per platform, built on a machine with a
 Swift toolchain, and no wheel at all for anything you did not build for — which
 is fine for a command line tool you install yourself, and useless for a module
@@ -91,8 +91,8 @@ that prints both inputs and the generated output.
 
 The wheel bundles a prebuilt `compilekv.wasm`. Rebuilding it needs a Swift
 toolchain plus a matching [Swift SDK for WebAssembly](https://www.swift.org/documentation/articles/wasm-getting-started.html),
-and a checkout of `KvToPyClass` as a sibling of this directory (the Swift
-package refers to it by relative path for now).
+`KvToPyClass/` is vendored in this repo and referenced by relative path, so no
+extra checkout is needed.
 
 ```console
 $ python scripts/build_wasm.py    # just the wasm module
