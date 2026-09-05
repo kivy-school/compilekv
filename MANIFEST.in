@@ -1,0 +1,9 @@
+include LICENSE
+include README.md
+include plan.md
+include scripts/build_wasm.py
+recursive-include CompileKvWasm/Sources *.swift
+include CompileKvWasm/Package.swift
+global-exclude *.py[cod]
+prune CompileKvWasm/.build
+exclude src/compilekv/*.wasm

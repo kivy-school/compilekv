@@ -1,0 +1,29 @@
+[project]
+name = "compilekv"
+version = "0.1.0"
+description = "Compile Kivy KV files into Python classes using a Swift WebAssembly module"
+readme = "README.md"
+authors = [
+    { name = "psychowasp", email = "psychowaspx@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "wasmtime>=25",
+]
+
+[project.scripts]
+compilekv = "compilekv:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+compilekv = ["*.wasm"]
