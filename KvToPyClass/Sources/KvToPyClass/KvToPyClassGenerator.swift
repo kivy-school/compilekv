@@ -312,6 +312,14 @@ private func replaceAllSelfWithInstance(_ expr: PySwiftAST.Expression) -> PySwif
 /// Previously these came from `UUID()`, which meant every run produced a
 /// different file for the same input. Numbering restarts for each class so
 /// adding a widget to one rule does not renumber the rest of the file.
+/// Names of kivy.metrics helpers seen in property values, so they can be
+/// imported. KV gets these for free from Builder's environment; generated
+/// Python has to import them.
+private final class MetricsCollector {
+    static let functions: Swift.Set<String> = ["dp", "sp", "pt", "mm", "cm", "inch"]
+    var used = Swift.Set<String>()
+}
+
 /// The rule currently being generated: which class, and which of its
 /// properties can be bound to.
 private final class RuleContext {
@@ -348,6 +356,7 @@ public struct KvToPyClassGenerator {
     /// Set per rule, so the deep child helpers can answer "is self.x bindable?"
     /// without threading the rule through every signature.
     private let ruleContext = RuleContext()
+    private let metrics = MetricsCollector()
     
     /// Track bindings that need to be unbound in __del__
     private struct BindingInfo {
@@ -382,6 +391,17 @@ public struct KvToPyClassGenerator {
         let needsFactory = !external.isEmpty || !registrations.isEmpty
         
         var imports = generateImports(for: widgetTypes.subtracting(external))
+        
+        // Populated while the classes above were generated.
+        if !metrics.used.isEmpty {
+            imports.append(.importFrom(ImportFrom(
+                module: "kivy.metrics",
+                names: metrics.used.sorted().map { Alias(name: $0, asName: nil) },
+                level: 0,
+                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+            )))
+        }
+        
         if needsFactory {
             imports.append(.importFrom(ImportFrom(
                 module: "kivy.factory",
@@ -1397,20 +1417,14 @@ public struct KvToPyClassGenerator {
            propertyType == .listProperty || 
            propertyType == .variableListProperty {
             // Parse as tuple/list: "None , None" -> (None, None) or "0.5, 0.5" -> (0.5, 0.5)
-            if valueStr.contains(",") {
-                let parts = valueStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                let exprs = parts.map { part -> PySwiftAST.Expression in
-                    if part == "None" {
-                        return .constant(makeConstant(.none))
-                    } else if let num = Double(part) {
-                        return .constant(makeConstant(.float(num)))
-                    } else if part == "True" {
-                        return .constant(makeConstant(.bool(true)))
-                    } else if part == "False" {
-                        return .constant(makeConstant(.bool(false)))
-                    } else {
-                        return .constant(makeConstant(.string(part)))
-                    }
+            let parts = splitTopLevel(valueStr)
+            // More than one element, or it is a single expression that merely
+            // happens to contain a comma, like min(a, b).
+            if parts.count > 1 {
+                let exprs = parts.map { part in
+                    literalElement(part)
+                        ?? parseComputedValue(part)
+                        ?? .constant(makeConstant(.string(part)))
                 }
                 return .tuple(Tuple(elts: exprs, ctx: .load, lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil))
             }
@@ -1431,28 +1445,135 @@ public struct KvToPyClassGenerator {
         }
         
         // Check for tuples (contains comma but not inside quotes)
-        if valueStr.contains(",") && !valueStr.hasPrefix("[") {
+        let parts = splitTopLevel(valueStr)
+        if parts.count > 1 && !valueStr.hasPrefix("[") {
             // Parse as tuple: "0.5, 0.5" -> (0.5, 0.5)
-            let parts = valueStr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            let exprs = parts.compactMap { part -> PySwiftAST.Expression? in
-                if part == "None" {
-                    return .constant(makeConstant(.none))
-                } else if let num = Double(part) {
-                    return .constant(makeConstant(.float(num)))
-                } else if part == "True" {
-                    return .constant(makeConstant(.bool(true)))
-                } else if part == "False" {
-                    return .constant(makeConstant(.bool(false)))
-                }
-                return nil
+            let exprs = parts.compactMap { part in
+                literalElement(part) ?? parseComputedValue(part)
             }
             if !exprs.isEmpty {
                 return .tuple(Tuple(elts: exprs, ctx: .load, lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil))
             }
         }
         
+        // A computed value such as dp(24) or dp(40) + 2 is real Python, not a
+        // string. Anything the string shapes above did not recognise gets one
+        // parse attempt before we give up and quote it.
+        if let expr = parseComputedValue(valueStr) {
+            return expr
+        }
+        
         // Otherwise treat as string
         return .constant(makeConstant(.string(valueStr)))
+    }
+    
+    /// A None / number / bool element of a comma separated value.
+    private func literalElement(_ part: String) -> PySwiftAST.Expression? {
+        switch part {
+        case "None": return .constant(makeConstant(.none))
+        case "True": return .constant(makeConstant(.bool(true)))
+        case "False": return .constant(makeConstant(.bool(false)))
+        default:
+            return Double(part).map { .constant(makeConstant(.float($0))) }
+        }
+    }
+    
+    /// Split on commas that are not inside brackets, so `dp(24), dp(12)` gives
+    /// two parts and `min(a, b), 2` gives two rather than three.
+    private func splitTopLevel(_ value: String) -> [String] {
+        var parts: [String] = []
+        var current = ""
+        var depth = 0
+        for character in value {
+            switch character {
+            case "(", "[", "{":
+                depth += 1
+                current.append(character)
+            case ")", "]", "}":
+                depth -= 1
+                current.append(character)
+            case "," where depth == 0:
+                parts.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            default:
+                current.append(character)
+            }
+        }
+        parts.append(current.trimmingCharacters(in: .whitespaces))
+        return parts.filter { !$0.isEmpty }
+    }
+    
+    /// Parse a value that is neither a literal nor a plain name.
+    ///
+    /// Bare names stay strings: an unquoted KV word is far more likely to be a
+    /// misspelled literal than a module global, and emitting it as a name
+    /// would turn a wrong value into a NameError.
+    private func parseComputedValue(_ valueStr: String) -> PySwiftAST.Expression? {
+        guard let module = try? parsePython("_tmp = \(valueStr)"),
+              case .module(let statements) = module,
+              case .assign(let assign) = statements.first
+        else { return nil }
+        
+        switch assign.value {
+        case .call, .binOp, .unaryOp, .subscriptExpr, .list, .dict, .set,
+             .compare, .boolOp, .ifExp, .joinedStr, .lambda:
+            let expr = replaceRootWithSelf(assign.value)
+            recordMetrics(in: expr)
+            return expr
+        default:
+            return nil
+        }
+    }
+    
+    /// Note any kivy.metrics helper the expression calls, so generate() can
+    /// import it.
+    private func recordMetrics(in expr: PySwiftAST.Expression) {
+        metrics.used.formUnion(namesUsed(in: expr).intersection(MetricsCollector.functions))
+    }
+    
+    private func namesUsed(in expr: PySwiftAST.Expression) -> Swift.Set<String> {
+        var names = Swift.Set<String>()
+        func walk(_ expr: PySwiftAST.Expression) {
+            switch expr {
+            case .name(let node):
+                names.insert(node.id)
+            case .attribute(let node):
+                walk(node.value)
+            case .call(let node):
+                walk(node.fun)
+                node.args.forEach(walk)
+                node.keywords.forEach { walk($0.value) }
+            case .binOp(let node):
+                walk(node.left); walk(node.right)
+            case .unaryOp(let node):
+                walk(node.operand)
+            case .boolOp(let node):
+                node.values.forEach(walk)
+            case .compare(let node):
+                walk(node.left); node.comparators.forEach(walk)
+            case .ifExp(let node):
+                walk(node.test); walk(node.body); walk(node.orElse)
+            case .tuple(let node):
+                node.elts.forEach(walk)
+            case .list(let node):
+                node.elts.forEach(walk)
+            case .set(let node):
+                node.elts.forEach(walk)
+            case .dict(let node):
+                node.keys.forEach { $0.map(walk) }
+                node.values.forEach(walk)
+            case .joinedStr(let node):
+                node.values.forEach(walk)
+            case .formattedValue(let node):
+                walk(node.value)
+            case .subscriptExpr(let node):
+                walk(node.value); walk(node.slice)
+            default:
+                break
+            }
+        }
+        walk(expr)
+        return names
     }
     
     private func needsBinding(_ property: KvProperty) -> Bool {
@@ -1477,6 +1598,7 @@ public struct KvToPyClassGenerator {
                let firstStmt = statements.first,
                case .assign(let assign) = firstStmt {
                 let expr = replaceRootWithSelf(assign.value)
+                recordMetrics(in: expr)
                 
                 // Use visitor to extract watched keys
                 let visitor = PropertyExpressionVisitor()
