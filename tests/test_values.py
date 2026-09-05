@@ -35,13 +35,28 @@ def test_a_call_stays_a_call(compiler, line, expected):
     "line,expected",
     [
         ("size_hint: None, None", "self.size_hint = (None, None)"),
-        ("background_color: 0.2, 0.6, 1, 1", "self.background_color = (0.2, 0.6, 1.0, 1.0)"),
+        ("background_color: 0.2, 0.6, 1, 1", "self.background_color = (0.2, 0.6, 1, 1)"),
         ("orientation: 'vertical'", 'self.orientation = "vertical"'),
         ("multiline: False", "self.multiline = False"),
-        ("font_size: 18", "self.font_size = 18.0"),
+        ("font_size: 18", "self.font_size = 18"),
     ],
 )
 def test_literals_are_unchanged(compiler, line, expected):
+    assert assignment(compiler, line) == expected
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("color: (1, 1, 1, 1)", "self.color = (1, 1, 1, 1)"),
+        ("pos: (10, 20)", "self.pos = (10, 20)"),
+        ("size: 200, 50", "self.size = (200, 50)"),
+        ("padding: [1, 2, 3, 4]", "self.padding = [1, 2, 3, 4]"),
+        ("padding: (dp(4), dp(8))", "self.padding = (dp(4), dp(8))"),
+    ],
+)
+def test_a_tuple_stays_a_tuple(compiler, line, expected):
+    """Brackets around the value do not turn it into a string."""
     assert assignment(compiler, line) == expected
 
 

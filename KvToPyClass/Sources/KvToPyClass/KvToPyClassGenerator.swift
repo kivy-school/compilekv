@@ -1135,7 +1135,6 @@ public struct KvToPyClassGenerator {
                 body.append(try generatePropertyBinding(property))
             } else {
                 // Simple assignment
-                let widgetName = baseClasses.first ?? "Widget"
                 let assignment = Assign(
                     targets: [.attribute(
                         Attribute(
@@ -1145,7 +1144,7 @@ public struct KvToPyClassGenerator {
                             lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
                         )
                     )],
-                    value: try propertyValueToExpression(property, widgetName: widgetName),
+                    value: try propertyValueToExpression(property),
                     typeComment: nil,
                     lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
                 )
@@ -1392,137 +1391,48 @@ public struct KvToPyClassGenerator {
         return .functionDef(delFunc)
     }
     
-    private func propertyValueToExpression(_ property: KvProperty, widgetName: String = "Widget") throws -> PySwiftAST.Expression {
-        // Use the raw value string which has the actual source representation
-        var valueStr = property.value.trimmingCharacters(in: .whitespaces)
+    /// A KV property value is a Python expression: `text: whatever` means
+    /// `widget.text = whatever`. Parse it and use it.
+    private func propertyValueToExpression(_ property: KvProperty) throws -> PySwiftAST.Expression {
+        let valueStr = property.value.trimmingCharacters(in: .whitespaces)
         
-        // Check if this is a binding expression (contains app., self., root., etc.)
+        // Bindings are rewritten into bind() calls elsewhere; this string is a
+        // placeholder those paths recognise.
         if valueStr.contains("app.") || valueStr.contains("self.") || valueStr.contains("root.") {
-            // This needs to be a binding expression, return as-is for now
-            // Will be handled by generatePropertyBinding
             return .constant(makeConstant(.string(valueStr)))
         }
         
-        // Strip quotes from string values if present
-        if (valueStr.hasPrefix("\"") && valueStr.hasSuffix("\"")) || 
-           (valueStr.hasPrefix("'") && valueStr.hasSuffix("'")) {
-            valueStr = String(valueStr.dropFirst().dropLast())
-        }
-        
-        // Check what type this property should be based on the widget registry
-        let propertyType = KivyWidgetRegistry.getPropertyType(property.name, on: widgetName)
-        
-        // Handle list/tuple properties (ReferenceListProperty, ListProperty, VariableListProperty)
-        if propertyType == .referenceListProperty || 
-           propertyType == .listProperty || 
-           propertyType == .variableListProperty {
-            // Parse as tuple/list: "None , None" -> (None, None) or "0.5, 0.5" -> (0.5, 0.5)
-            let parts = splitTopLevel(valueStr)
-            // More than one element, or it is a single expression that merely
-            // happens to contain a comma, like min(a, b).
-            if parts.count > 1 {
-                let exprs = parts.map { part in
-                    literalElement(part)
-                        ?? parseComputedValue(part)
-                        ?? .constant(makeConstant(.string(part)))
-                }
-                return .tuple(Tuple(elts: exprs, ctx: .load, lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil))
-            }
-        }
-        
-        // Try to parse as number
-        if let num = Double(valueStr) {
-            return .constant(makeConstant(.float(num)))
-        }
-        
-        // Check for booleans
-        if valueStr == "True" {
-            return .constant(makeConstant(.bool(true)))
-        } else if valueStr == "False" {
-            return .constant(makeConstant(.bool(false)))
-        } else if valueStr == "None" {
-            return .constant(makeConstant(.none))
-        }
-        
-        // Check for tuples (contains comma but not inside quotes)
-        let parts = splitTopLevel(valueStr)
-        if parts.count > 1 && !valueStr.hasPrefix("[") {
-            // Parse as tuple: "0.5, 0.5" -> (0.5, 0.5)
-            let exprs = parts.compactMap { part in
-                literalElement(part) ?? parseComputedValue(part)
-            }
-            if !exprs.isEmpty {
-                return .tuple(Tuple(elts: exprs, ctx: .load, lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil))
-            }
-        }
-        
-        // A computed value such as dp(24) or dp(40) + 2 is real Python, not a
-        // string. Anything the string shapes above did not recognise gets one
-        // parse attempt before we give up and quote it.
-        if let expr = parseComputedValue(valueStr) {
+        if let expr = parseValue(valueStr) {
             return expr
         }
         
-        // Otherwise treat as string
-        return .constant(makeConstant(.string(valueStr)))
-    }
-    
-    /// A None / number / bool element of a comma separated value.
-    private func literalElement(_ part: String) -> PySwiftAST.Expression? {
-        switch part {
-        case "None": return .constant(makeConstant(.none))
-        case "True": return .constant(makeConstant(.bool(true)))
-        case "False": return .constant(makeConstant(.bool(false)))
-        default:
-            return Double(part).map { .constant(makeConstant(.float($0))) }
+        // Did not parse. Quote it, minus any quotes it already had.
+        var literal = valueStr
+        if literal.count >= 2,
+           (literal.hasPrefix("\"") && literal.hasSuffix("\"")) || (literal.hasPrefix("'") && literal.hasSuffix("'")) {
+            literal = String(literal.dropFirst().dropLast())
         }
+        return .constant(makeConstant(.string(literal)))
     }
     
-    /// Split on commas that are not inside brackets, so `dp(24), dp(12)` gives
-    /// two parts and `min(a, b), 2` gives two rather than three.
-    private func splitTopLevel(_ value: String) -> [String] {
-        var parts: [String] = []
-        var current = ""
-        var depth = 0
-        for character in value {
-            switch character {
-            case "(", "[", "{":
-                depth += 1
-                current.append(character)
-            case ")", "]", "}":
-                depth -= 1
-                current.append(character)
-            case "," where depth == 0:
-                parts.append(current.trimmingCharacters(in: .whitespaces))
-                current = ""
-            default:
-                current.append(character)
-            }
-        }
-        parts.append(current.trimmingCharacters(in: .whitespaces))
-        return parts.filter { !$0.isEmpty }
-    }
-    
-    /// Parse a value that is neither a literal nor a plain name.
+    /// The value as a Python expression, or nil to fall back to a string.
     ///
-    /// Bare names stay strings: an unquoted KV word is far more likely to be a
-    /// misspelled literal than a module global, and emitting it as a name
-    /// would turn a wrong value into a NameError.
-    private func parseComputedValue(_ valueStr: String) -> PySwiftAST.Expression? {
-        guard let module = try? parsePython("_tmp = \(valueStr)"),
+    /// A bare name is the one thing we refuse: an unquoted KV word such as
+    /// `orientation: vertical` is a sloppy literal far more often than it is a
+    /// module global, and emitting it as a name turns a working value into a
+    /// NameError.
+    private func parseValue(_ valueStr: String) -> PySwiftAST.Expression? {
+        guard !valueStr.isEmpty,
+              let module = try? parsePython("_tmp = \(valueStr)"),
               case .module(let statements) = module,
               case .assign(let assign) = statements.first
         else { return nil }
         
-        switch assign.value {
-        case .call, .binOp, .unaryOp, .subscriptExpr, .list, .dict, .set,
-             .compare, .boolOp, .ifExp, .joinedStr, .lambda:
-            let expr = replaceRootWithSelf(assign.value)
-            recordMetrics(in: expr)
-            return expr
-        default:
-            return nil
-        }
+        if case .name = assign.value { return nil }
+        
+        let expr = replaceRootWithSelf(assign.value)
+        recordMetrics(in: expr)
+        return expr
     }
     
     /// Note any kivy.metrics helper the expression calls, so generate() can
@@ -2248,7 +2158,7 @@ public struct KvToPyClassGenerator {
         for property in staticProperties {
             let keyword = Keyword(
                 arg: property.name,
-                value: try propertyValueToExpression(property, widgetName: widget.name)
+                value: try propertyValueToExpression(property)
             )
             keywords.append(keyword)
         }
@@ -2278,7 +2188,7 @@ public struct KvToPyClassGenerator {
             if let expr = parsedExpr {
                 valueExpr = expr
             } else {
-                valueExpr = try propertyValueToExpression(property, widgetName: widget.name)
+                valueExpr = try propertyValueToExpression(property)
             }
             
             // Set initial value: widget.property = expression
@@ -2371,7 +2281,7 @@ public struct KvToPyClassGenerator {
         for property in widget.properties {
             let keyword = Keyword(
                 arg: property.name,
-                value: try propertyValueToExpression(property, widgetName: widget.name)
+                value: try propertyValueToExpression(property)
             )
             keywords.append(keyword)
         }
@@ -2750,6 +2660,6 @@ public struct KvToPyClassGenerator {
     /// Convert canvas property value to Python expression
     private func canvasPropertyValueToExpression(_ property: KvProperty) throws -> PySwiftAST.Expression {
         // Canvas properties are similar to widget properties
-        return try propertyValueToExpression(property, widgetName: "Canvas")
+        return try propertyValueToExpression(property)
     }
 }
