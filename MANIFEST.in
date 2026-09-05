@@ -7,3 +7,4 @@ include CompileKvWasm/Package.swift
 global-exclude *.py[cod]
 prune CompileKvWasm/.build
 exclude src/compilekv/*.wasm
+recursive-include tests *.py

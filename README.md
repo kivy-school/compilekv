@@ -18,7 +18,10 @@ $ compilekv . --no-recursive
 ```
 
 Each `style.kv` compiles to `style.py` beside it. When that `.py` already
-exists its contents are handed to the generator so existing classes carry over.
+exists its contents are handed to the generator, so hand written methods carry
+over. Output is deterministic and regenerating is idempotent -- running
+`compilekv` twice leaves the files byte for byte identical, which keeps
+generated code reviewable in version control.
 
 As a library:
 
@@ -35,6 +38,15 @@ python_source = compiler.compile_source(kv_source, existing_py_source)
 Loading the wasm module is the expensive part, so reuse one `KvCompiler` when
 converting more than a single file. `compile_source` raises `KvCompileError`
 with the parser's message when the KV is invalid.
+
+## Tests
+
+```console
+$ COMPILEKV_SKIP_WASM_BUILD=1 uv run --group dev pytest
+```
+
+Drop the environment variable to rebuild the wasm module first. The suite covers
+the wasm ABI, the file walking layer, and the CLI.
 
 ## Building from source
 
