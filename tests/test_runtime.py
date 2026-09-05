@@ -57,6 +57,13 @@ def test_generates_bindings_for_children(compiler):
     assert "app.handle_click()" in output
 
 
+def test_del_unbinds_and_drops_children(compiler):
+    output = compiler.compile_source(CHILDREN_KV)
+    body = output.split("def __del__")[1]
+    assert "obj.unbind(**{prop: callback})" in body
+    assert "self.clear_widgets()" in body
+
+
 @pytest.mark.parametrize("name", sorted(ALL_KV))
 def test_every_fixture_compiles(compiler, name):
     output = compiler.compile_source(ALL_KV[name])

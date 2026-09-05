@@ -986,6 +986,45 @@ public struct KvToPyClassGenerator {
         )
         
         body.append(.forStmt(forLoop))
+
+        // try:
+        //     self.clear_widgets()
+        // except:
+        //     pass
+        //
+        // Drops every child so the tree this class built does not outlive it.
+        body.append(.tryStmt(Try(
+            body: [
+                .expr(Expr(
+                    value: .call(
+                        Call(
+                            fun: .attribute(
+                                Attribute(
+                                    value: .name(makeName("self")),
+                                    attr: "clear_widgets",
+                                    ctx: .load,
+                                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                                )
+                            ),
+                            args: [],
+                            keywords: [],
+                            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                        )
+                    ),
+                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                ))
+            ],
+            handlers: [
+                ExceptHandler(
+                    type: nil,
+                    name: nil,
+                    body: [.pass(Pass(lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil))]
+                )
+            ],
+            orElse: [],
+            finalBody: [],
+            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+        )))
         
         let delFunc = FunctionDef(
             name: "__del__",
