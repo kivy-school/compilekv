@@ -1,7 +1,4 @@
-"""Argument parsing for `python -m compilekv`.
-
-A thin wrapper over the library in `compiler.py`, which is the real interface.
-"""
+"""Argument parsing for `python -m compilekv`. The library is in compiler.py."""
 
 from __future__ import annotations
 

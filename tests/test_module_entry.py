@@ -1,8 +1,4 @@
-"""One smoke test for `python -m compilekv`.
-
-The command line is a thin wrapper over the library, which is what the rest of
-the suite covers. This only checks the wrapper is wired up.
-"""
+"""Smoke test for `python -m compilekv`. The library is covered elsewhere."""
 
 import subprocess
 import sys

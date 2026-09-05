@@ -1,14 +1,8 @@
 #!/usr/bin/env python3
 """Build the CompileKvWasm Swift package into a WASI reactor module.
 
-Used by ``setup.py`` while building a wheel, and runnable on its own:
-
-    python scripts/build_wasm.py [--output src/compilekv/compilekv.wasm]
-
-Environment overrides:
-    COMPILEKV_SWIFT             swift executable to use
-    COMPILEKV_WASM_SDK          Swift SDK name (e.g. swift-6.3.3-RELEASE_wasm)
-    COMPILEKV_SKIP_WASM_BUILD   reuse an existing module instead of rebuilding
+Used by setup.py, and runnable on its own. Overrides: COMPILEKV_SWIFT,
+COMPILEKV_WASM_SDK, COMPILEKV_SKIP_WASM_BUILD.
 """
 
 from __future__ import annotations
@@ -29,9 +23,7 @@ BUILT_MODULE = (
     SWIFT_PACKAGE_DIR / ".build" / "wasm32-unknown-wasip1" / "release" / f"{PRODUCT_NAME}.wasm"
 )
 
-# Reactor model: no `main` runs, the host calls the exported functions directly.
-# `-gnone` and `--strip-all` drop debug info the host never reads, and `-Osize`
-# keeps the code section down (the bulk of what remains is Foundation's data).
+# Reactor model, no debug info, size-optimized.
 BUILD_FLAGS = [
     "-c",
     "release",
@@ -65,7 +57,6 @@ def _toolchain_version(swift: str) -> str | None:
 
 
 def _available_sdks(swift: str) -> list[str]:
-    """Non-embedded wasm Swift SDKs known to the toolchain."""
     result = _run([swift, "sdk", "list"])
     return [
         line.strip()
@@ -82,11 +73,10 @@ def _swiftly_toolchains() -> set[str]:
 
 
 def resolve_build_command(swift: str) -> tuple[list[str], str]:
-    """Work out how to invoke swift, and with which SDK.
+    """Pick a swift invocation and SDK whose versions match.
 
-    A Swift SDK only works with the toolchain it was built for, so when the
-    default toolchain does not match an installed wasm SDK we fall back to
-    running the matching toolchain through swiftly.
+    An SDK only works with its own toolchain, so fall back to swiftly when the
+    default one is a different version.
     """
     sdks = _available_sdks(swift)
     if not sdks:
@@ -108,7 +98,6 @@ def resolve_build_command(swift: str) -> tuple[list[str], str]:
         if match and match.group(1) == toolchain:
             return [swift], sdk
 
-    # Default toolchain does not match; look for one swiftly can supply.
     installed = _swiftly_toolchains()
     for sdk in sdks:
         match = VERSION_RE.search(sdk)
@@ -122,7 +111,6 @@ def resolve_build_command(swift: str) -> tuple[list[str], str]:
 
 
 def build(output: Path = DEFAULT_OUTPUT, force: bool = False) -> Path:
-    """Build the wasm module and copy it to `output`."""
     output = Path(output)
 
     if not force and os.environ.get("COMPILEKV_SKIP_WASM_BUILD"):

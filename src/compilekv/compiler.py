@@ -1,4 +1,4 @@
-"""File level helpers: find ``.kv`` files, feed them through wasm, write ``.py``."""
+"""Find .kv files, run them through wasm, write the .py."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from .runtime import KvCompiler, default_compiler
 
 
 def output_path_for(kv_path: Path) -> Path:
-    """The ``.py`` file a given ``.kv`` file compiles to."""
     return kv_path.with_suffix(".py")
 
 
@@ -17,11 +16,7 @@ def compile_file(
     output_path: str | Path | None = None,
     compiler: KvCompiler | None = None,
 ) -> Path:
-    """Compile a single ``.kv`` file and write the generated Python next to it.
-
-    When the target ``.py`` already exists its contents are handed to the
-    generator so existing classes and their methods are carried over.
-    """
+    """Compile one .kv, feeding in the existing .py so its methods carry over."""
     kv_path = Path(kv_path)
     target = Path(output_path) if output_path is not None else output_path_for(kv_path)
     compiler = compiler or default_compiler()
@@ -35,7 +30,7 @@ def compile_file(
 
 
 def find_kv_files(root: str | Path, recursive: bool = True) -> list[Path]:
-    """List the ``.kv`` files under `root`, or `root` itself if it is one."""
+    """The .kv files under `root`, or `root` itself if it is one."""
     root = Path(root)
     if root.is_file():
         return [root]
@@ -48,7 +43,7 @@ def compile_tree(
     recursive: bool = True,
     compiler: KvCompiler | None = None,
 ) -> list[Path]:
-    """Compile every ``.kv`` file under `root`, returning the files written."""
+    """Compile every .kv under `root`. Returns the files written."""
     compiler = compiler or default_compiler()
     return [
         compile_file(kv_path, compiler=compiler)

@@ -1,14 +1,7 @@
-"""A visible end to end round trip.
-
-Runs last and prints both inputs and the generated output, so a test run shows
-what the wasm module actually does rather than only asserting about it. Printing
-bypasses pytest's capture, so it shows without `-s`.
-"""
+"""A visible round trip: runs last, prints both inputs and the output."""
 
 from compilekv import compile_file
 
-# A rule with children, a property binding and an event handler, so the
-# generated class exercises most of the generator.
 DEMO_KV = """\
 <ProfileCard@BoxLayout>:
     orientation: 'vertical'
@@ -21,7 +14,7 @@ DEMO_KV = """\
         on_press: self.save()
 """
 
-# An existing file with a hand written method the generator must carry over.
+# Has a hand written method the generator must carry over.
 DEMO_PY = '''\
 class ProfileCard(BoxLayout):
 

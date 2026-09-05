@@ -1,4 +1,4 @@
-"""Tests for the wasm module and its string-passing ABI."""
+"""The wasm module and its string-passing ABI."""
 
 import pytest
 
@@ -15,11 +15,7 @@ def test_wasm_asset_ships_with_the_package():
 
 
 def test_distribution_is_platform_independent():
-    """The reason the conversion is wasm and not a native binary.
-
-    A native Swift build would need a wheel per platform; this must stay one
-    pure-Python wheel that imports anywhere.
-    """
+    """One pure-Python wheel for every platform -- the reason for wasm."""
     from importlib.metadata import PackageNotFoundError, distribution
 
     try:
@@ -34,7 +30,7 @@ def test_distribution_is_platform_independent():
 
 
 def test_no_compiled_extensions_are_shipped():
-    """Only the wasm asset is binary; nothing is compiled for a host arch."""
+    """Nothing compiled for a host arch."""
     package_dir = _default_wasm_path().parent
     suffixes = {p.suffix for p in package_dir.iterdir() if p.is_file()}
 
@@ -75,7 +71,7 @@ def test_invalid_kv_raises_with_the_parser_message(compiler):
 
 
 def test_error_does_not_poison_the_instance(compiler):
-    """A failed conversion must leave the module usable for the next call."""
+    """A failure must leave the module usable."""
     expected = compiler.compile_source(SIMPLE_KV)
     with pytest.raises(KvCompileError):
         compiler.compile_source("<Broken\n    bad ::: syntax\n")
@@ -87,20 +83,20 @@ def test_empty_source_is_not_an_error(compiler):
 
 
 def test_non_ascii_survives_the_boundary(compiler):
-    """Strings cross as UTF-8 bytes, so multi-byte characters must round trip."""
+    """Strings cross as UTF-8 bytes."""
     output = compiler.compile_source("<Greeting@Label>:\n    text: 'héllo wörld — 日本語'\n")
     assert "héllo wörld — 日本語" in output
 
 
 def test_repeated_calls_are_stable(compiler):
-    """Exercise alloc/free repeatedly to catch leaks or memory reuse bugs."""
+    """Exercise alloc/free repeatedly."""
     first = compiler.compile_source(CHILDREN_KV)
     for _ in range(50):
         assert compiler.compile_source(CHILDREN_KV) == first
 
 
 def test_large_input(compiler):
-    """A source big enough to force linear memory to grow."""
+    """Big enough to grow linear memory."""
     source = "".join(
         f"<Widget{i}@BoxLayout>:\n    orientation: 'vertical'\n    spacing: {i}\n\n"
         for i in range(500)
@@ -117,10 +113,7 @@ def test_instances_are_independent():
 
 
 def test_output_is_deterministic(compiler):
-    """Generated variable names must not change between runs.
-
-    They used to come from `UUID()`, which rewrote every file on every run.
-    """
+    """Names used to come from UUID(), rewriting every file on every run."""
     assert compiler.compile_source(CHILDREN_KV) == compiler.compile_source(CHILDREN_KV)
 
 
@@ -136,7 +129,7 @@ def test_generated_names_are_numbered_not_random(compiler):
 
 
 def test_compiled_module_is_cached_across_instances():
-    """Compiling the wasm is the slow part; it must happen once per process."""
+    """Compiling the wasm must happen once per process."""
     from compilekv.runtime import _compile_module
 
     KvCompiler()
@@ -149,14 +142,14 @@ def test_compiled_module_is_cached_across_instances():
 
 
 def test_default_compiler_is_shared():
-    """Every importer must land on one instance, not one per call site."""
+    """Every importer lands on one instance."""
     from compilekv import default_compiler
 
     assert default_compiler() is default_compiler()
 
 
 def test_module_helpers_reuse_the_default_compiler(tmp_path, monkeypatch):
-    """compile_file must not build a fresh compiler on each call."""
+    """compile_file must not build a fresh compiler per call."""
     import compilekv.runtime as runtime
     from compilekv import compile_file, default_compiler
 

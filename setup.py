@@ -1,9 +1,4 @@
-"""Build hooks for compilekv.
-
-The package itself is pure Python; the only build step is compiling the
-CompileKvWasm Swift package to a WASI reactor module and shipping it as package
-data. The result is architecture independent, so the wheel stays ``py3-none-any``.
-"""
+"""Build hook: compile the Swift package to wasm and ship it as package data."""
 
 from __future__ import annotations
 
@@ -17,12 +12,10 @@ from setuptools.command.build_py import build_py as _build_py
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import build_wasm  # noqa: E402  (needs the path above)
+import build_wasm  # noqa: E402
 
 
 class build_wasm_command(Command):
-    """`python setup.py build_wasm` -- compile the Swift package to wasm."""
-
     description = "Build the CompileKvWasm module and place it in the package."
     user_options = [("force", "f", "Build even when COMPILEKV_SKIP_WASM_BUILD is set.")]
     boolean_options = ["force"]
@@ -38,7 +31,7 @@ class build_wasm_command(Command):
 
 
 class build(_build):
-    # Make sure the module exists before anything collects package data.
+    # The module must exist before anything collects package data.
     sub_commands = [("build_wasm", None), *_build.sub_commands]
 
 

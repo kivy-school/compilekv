@@ -1,4 +1,4 @@
-"""Tests for the file level API: discovery, reading, writing, regeneration."""
+"""The file level API: discovery, reading, writing, regeneration."""
 
 import pytest
 
@@ -40,7 +40,7 @@ def test_compile_file_honours_an_explicit_output(tmp_path, compiler):
 
 
 def test_regenerating_is_idempotent(tmp_path, compiler):
-    """Compiling over previously generated output must not change it."""
+    """Compiling over generated output must not change it."""
     kv = tmp_path / "children.kv"
     kv.write_text(CHILDREN_KV)
 
@@ -133,7 +133,7 @@ def test_compile_file_reports_a_missing_kv(tmp_path, compiler):
 
 
 def test_compile_tree_raises_on_invalid_kv(tmp_path, compiler):
-    """A broken file surfaces the parser error rather than being skipped."""
+    """A broken file surfaces the parser error."""
     (tmp_path / "bad.kv").write_text("<Broken\n    bad ::: syntax\n")
 
     with pytest.raises(KvCompileError, match="Line 1"):
@@ -165,7 +165,7 @@ def test_find_kv_files_returns_a_stable_order(project):
 
 
 def test_non_ascii_survives_the_file_layer(tmp_path, compiler):
-    """Files are read and written as UTF-8 regardless of the platform default."""
+    """Read and written as UTF-8 regardless of platform default."""
     kv = tmp_path / "greeting.kv"
     kv.write_text("<Greeting@Label>:\n    text: 'héllo — 日本語'\n", encoding="utf-8")
 
@@ -180,7 +180,7 @@ def test_compile_tree_returns_paths_in_discovery_order(project, compiler):
 
 
 def test_compile_file_overwrites_a_stale_generated_file(tmp_path, compiler):
-    """Removing a rule from the .kv must drop its class from the output."""
+    """Removing a rule drops its class."""
     kv = tmp_path / "two.kv"
     kv.write_text(SIMPLE_KV + "\n<Extra@Label>:\n    text: 'gone soon'\n")
     target = compile_file(kv, compiler=compiler)

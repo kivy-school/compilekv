@@ -2,8 +2,6 @@ import pytest
 
 from compilekv import KvCompiler
 
-# Two rules, one with children and event bindings, so the generated class has
-# an __init__, a __del__ and bound callbacks to check against.
 SIMPLE_KV = """\
 <MyButton@Button>:
     text: 'Hello World'
@@ -36,13 +34,12 @@ ALL_KV = {"simple": SIMPLE_KV, "children": CHILDREN_KV, "canvas": CANVAS_KV}
 
 @pytest.fixture(scope="session")
 def compiler() -> KvCompiler:
-    """One compiler for the whole session -- instantiating wasm is expensive."""
     return KvCompiler()
 
 
 @pytest.fixture
 def project(tmp_path):
-    """A directory of .kv files, including one in a subdirectory."""
+    """A directory of .kv files, one of them nested."""
     (tmp_path / "simple.kv").write_text(SIMPLE_KV)
     (tmp_path / "children.kv").write_text(CHILDREN_KV)
     nested = tmp_path / "nested"
