@@ -427,10 +427,12 @@ public struct KvToPyClassGenerator {
     
     /// Generate Python code for all dynamic classes and rules
     public func generate() throws -> String {
-        // Widgets Kivy ships get imported; anything else is a custom widget
-        // from somewhere we cannot see, so it comes off the Factory.
-        let widgetTypes = collectWidgetTypes()
-        let external = widgetTypes.filter { !KivyWidgetRegistry.widgetExists($0) && !isDefinedHere($0) }
+        // Three kinds of widget name: one this module defines, which needs
+        // nothing; one Kivy ships, which gets imported; and anything else,
+        // which is a custom widget from somewhere we cannot see and so comes
+        // off the Factory.
+        let referenced = collectWidgetTypes().filter { !isDefinedHere($0) }
+        let external = referenced.filter { !KivyWidgetRegistry.widgetExists($0) }
         
         var generatedClasses: [Statement] = []
         for rule in module.rules {
@@ -440,7 +442,7 @@ public struct KvToPyClassGenerator {
         let registrations = factoryRegistrations(for: generatedClasses)
         let needsFactory = !external.isEmpty || !registrations.isEmpty
         
-        var imports = generateImports(for: widgetTypes.subtracting(external))
+        var imports = generateImports(for: referenced.subtracting(external))
         
         // Populated while the classes above were generated.
         if !metrics.used.isEmpty {
@@ -790,10 +792,65 @@ public struct KvToPyClassGenerator {
         }
     }
     
-    /// Convert widget type name to appropriate kivy.uix module path
+    /// Where a widget actually lives. Most are `kivy.uix.<lowercase>`, but
+    /// plenty share a module with a sibling, and guessing invents a module
+    /// that does not exist.
+    private static let widgetModules: [String: String] = {
+        var modules: [String: String] = [:]
+        func put(_ module: String, _ names: [String]) {
+            for name in names { modules[name] = module }
+        }
+        put("kivy.uix.behaviors", [
+            "ButtonBehavior", "ToggleButtonBehavior", "DragBehavior", "FocusBehavior",
+            "CompoundSelectionBehavior", "CodeNavigationBehavior", "EmacsBehavior",
+            "CoverBehavior", "TouchRippleBehavior", "TouchRippleButtonBehavior",
+            "MotionCollideBehavior", "MotionBlockBehavior",
+        ])
+        put("kivy.uix.screenmanager", [
+            "Screen", "TransitionBase", "NoTransition", "SlideTransition",
+            "CardTransition", "FadeTransition", "FallOutTransition",
+            "RiseInTransition", "ShaderTransition", "WipeTransition",
+        ])
+        put("kivy.uix.actionbar", [
+            "ActionButton", "ActionGroup", "ActionItem", "ActionOverflow",
+            "ActionPrevious", "ActionSeparator", "ActionToggleButton", "ActionView",
+        ])
+        put("kivy.uix.settings", [
+            "Settings", "SettingsPanel", "SettingItem", "SettingBoolean", "SettingColor",
+            "SettingOptions", "SettingPath", "SettingSidebarLabel", "SettingString",
+            "SettingTitle", "InterfaceWithSidebar", "InterfaceWithSpinner",
+            "InterfaceWithTabbedPanel", "MenuSidebar", "MenuSpinner", "ContentPanel",
+        ])
+        put("kivy.uix.effectwidget", [
+            "EffectBase", "AdvancedEffectBase", "ChannelMixEffect",
+            "HorizontalBlurEffect", "VerticalBlurEffect", "PixelateEffect",
+        ])
+        put("kivy.uix.tabbedpanel", ["TabbedPanelHeader", "TabbedPanelStrip", "StripLayout"])
+        put("kivy.uix.videoplayer", [
+            "VideoPlayerAnnotation", "VideoPlayerPlayPause", "VideoPlayerPreview",
+            "VideoPlayerProgressBar", "VideoPlayerStop", "VideoPlayerVolume",
+        ])
+        put("kivy.uix.rst", [
+            "RstBlockQuote", "RstDefinition", "RstDefinitionList", "RstDefinitionSpace",
+            "RstDocument", "RstFieldName", "RstFootName", "RstListBullet", "RstListItem",
+            "RstLiteralBlock", "RstNote", "RstParagraph", "RstTerm", "RstTitle", "RstWarning",
+        ])
+        put("kivy.uix.filechooser", [
+            "FileChooserController", "FileChooserLayout", "FileChooserProgressBase",
+            "FileChooserListView", "FileChooserIconView",
+        ])
+        put("kivy.uix.accordion", ["AccordionItem"])
+        put("kivy.uix.bubble", ["BubbleContent", "BubbleButton"])
+        put("kivy.uix.colorpicker", ["ColorWheel"])
+        put("kivy.uix.gesturesurface", ["GestureContainer"])
+        put("kivy.uix.treeview", ["TreeViewNode", "TreeViewLabel"])
+        put("kivy.uix.textinput", ["TextInputCutCopyPaste"])
+        put("kivy.uix.image", ["AsyncImage"])
+        return modules
+    }()
+    
     private func kivyModuleForWidget(_ widgetName: String) -> String {
-        let lowercased = widgetName.lowercased()
-        return "kivy.uix.\(lowercased)"
+        Self.widgetModules[widgetName] ?? "kivy.uix.\(widgetName.lowercased())"
     }
     
     private func generateImports(for widgetTypes: Swift.Set<String>) -> [Statement] {
