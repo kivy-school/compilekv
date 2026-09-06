@@ -60,7 +60,11 @@ class PropertyExpressionVisitor: ExpressionVisitor {
     func visitDict(_ node: Dict) {}
     func visitSet(_ node: Set) {}
     func visitName(_ node: Name) {}
-    func visitSubscript(_ node: Subscript) {}
+    func visitSubscript(_ node: Subscript) {
+        // self.texture_size[1] still watches texture_size
+        visitExpression(node.value)
+        visitExpression(node.slice)
+    }
     func visitStarred(_ node: Starred) {}
     func visitBinOp(_ node: BinOp) {
         // Visit both operands to extract watched keys
@@ -196,15 +200,24 @@ private func replaceAttributeWithNameRef(_ expr: PySwiftAST.Expression, object: 
     }
 }
 
-/// Rewrite `root` to `self` in an expression tree.
+/// Resolve KV's two implicit objects in an expression tree.
 ///
-/// `root` in KV is the widget the rule applies to; in the generated __init__
-/// that is the instance being built. Event handlers already did this, property
-/// values did not, so `text: root.name` emitted an undefined `root`.
-private func replaceRootWithSelf(_ expr: PySwiftAST.Expression) -> PySwiftAST.Expression {
+/// `root` is the widget the rule applies to, which is `self` in the generated
+/// __init__. `self` is the widget whose block the value was written in, which
+/// is the rule root at the top level but a child's variable inside a child
+/// block -- `height: self.texture_size[1]` under a Label means that Label.
+///
+/// Both are mapped in one pass so a `root` rewritten to `self` is not then
+/// rewritten again into the child's variable.
+private func resolveKvObjects(_ expr: PySwiftAST.Expression, selfName: String) -> PySwiftAST.Expression {
     func rename(_ name: Name) -> Name {
-        guard name.id == "root" else { return name }
-        return Name(id: "self", ctx: name.ctx, lineno: name.lineno, colOffset: name.colOffset, endLineno: name.endLineno, endColOffset: name.endColOffset)
+        let resolved: String
+        switch name.id {
+        case "root": resolved = "self"
+        case "self": resolved = selfName
+        default: return name
+        }
+        return Name(id: resolved, ctx: name.ctx, lineno: name.lineno, colOffset: name.colOffset, endLineno: name.endLineno, endColOffset: name.endColOffset)
     }
     
     switch expr {
@@ -213,7 +226,7 @@ private func replaceRootWithSelf(_ expr: PySwiftAST.Expression) -> PySwiftAST.Ex
         
     case .attribute(let node):
         return .attribute(Attribute(
-            value: replaceRootWithSelf(node.value),
+            value: resolveKvObjects(node.value, selfName: selfName),
             attr: node.attr,
             ctx: node.ctx,
             lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
@@ -221,13 +234,13 @@ private func replaceRootWithSelf(_ expr: PySwiftAST.Expression) -> PySwiftAST.Ex
         
     case .joinedStr(let node):
         return .joinedStr(JoinedStr(
-            values: node.values.map(replaceRootWithSelf),
+            values: node.values.map { resolveKvObjects($0, selfName: selfName) },
             lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
         ))
         
     case .formattedValue(let node):
         return .formattedValue(FormattedValue(
-            value: replaceRootWithSelf(node.value),
+            value: resolveKvObjects(node.value, selfName: selfName),
             conversion: node.conversion,
             formatSpec: node.formatSpec,
             lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
@@ -235,23 +248,52 @@ private func replaceRootWithSelf(_ expr: PySwiftAST.Expression) -> PySwiftAST.Ex
         
     case .call(let node):
         return .call(Call(
-            fun: replaceRootWithSelf(node.fun),
-            args: node.args.map(replaceRootWithSelf),
-            keywords: node.keywords.map { Keyword(arg: $0.arg, value: replaceRootWithSelf($0.value)) },
+            fun: resolveKvObjects(node.fun, selfName: selfName),
+            args: node.args.map { resolveKvObjects($0, selfName: selfName) },
+            keywords: node.keywords.map { Keyword(arg: $0.arg, value: resolveKvObjects($0.value, selfName: selfName)) },
+            lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
+        ))
+        
+    case .subscriptExpr(let node):
+        return .subscriptExpr(Subscript(
+            value: resolveKvObjects(node.value, selfName: selfName),
+            slice: resolveKvObjects(node.slice, selfName: selfName),
+            ctx: node.ctx,
+            lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
+        ))
+        
+    case .unaryOp(let node):
+        return .unaryOp(UnaryOp(op: node.op, operand: resolveKvObjects(node.operand, selfName: selfName), lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        
+    case .boolOp(let node):
+        return .boolOp(BoolOp(op: node.op, values: node.values.map { resolveKvObjects($0, selfName: selfName) }, lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        
+    case .compare(let node):
+        return .compare(Compare(
+            left: resolveKvObjects(node.left, selfName: selfName),
+            ops: node.ops,
+            comparators: node.comparators.map { resolveKvObjects($0, selfName: selfName) },
+            lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
+        ))
+        
+    case .dict(let node):
+        return .dict(Dict(
+            keys: node.keys.map { $0.map { resolveKvObjects($0, selfName: selfName) } },
+            values: node.values.map { resolveKvObjects($0, selfName: selfName) },
             lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset
         ))
         
     case .tuple(let node):
-        return .tuple(Tuple(elts: node.elts.map(replaceRootWithSelf), ctx: node.ctx, lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        return .tuple(Tuple(elts: node.elts.map { resolveKvObjects($0, selfName: selfName) }, ctx: node.ctx, lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
         
     case .list(let node):
-        return .list(List(elts: node.elts.map(replaceRootWithSelf), ctx: node.ctx, lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        return .list(List(elts: node.elts.map { resolveKvObjects($0, selfName: selfName) }, ctx: node.ctx, lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
         
     case .binOp(let node):
-        return .binOp(BinOp(left: replaceRootWithSelf(node.left), op: node.op, right: replaceRootWithSelf(node.right), lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        return .binOp(BinOp(left: resolveKvObjects(node.left, selfName: selfName), op: node.op, right: resolveKvObjects(node.right, selfName: selfName), lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
         
     case .ifExp(let node):
-        return .ifExp(IfExp(test: replaceRootWithSelf(node.test), body: replaceRootWithSelf(node.body), orElse: replaceRootWithSelf(node.orElse), lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
+        return .ifExp(IfExp(test: resolveKvObjects(node.test, selfName: selfName), body: resolveKvObjects(node.body, selfName: selfName), orElse: resolveKvObjects(node.orElse, selfName: selfName), lineno: node.lineno, colOffset: node.colOffset, endLineno: node.endLineno, endColOffset: node.endColOffset))
         
     default:
         return expr
@@ -320,6 +362,13 @@ private final class MetricsCollector {
     var used = Swift.Set<String>()
 }
 
+/// What KV's `self` refers to right now: the rule root by default, or the
+/// child widget whose block is being generated.
+private final class SelfContext {
+    var name = "self"
+    var widgetType: String?
+}
+
 /// The rule currently being generated: which class, and which of its
 /// properties can be bound to.
 private final class RuleContext {
@@ -356,6 +405,7 @@ public struct KvToPyClassGenerator {
     /// Set per rule, so the deep child helpers can answer "is self.x bindable?"
     /// without threading the rule through every signature.
     private let ruleContext = RuleContext()
+    private let selfContext = SelfContext()
     private let metrics = MetricsCollector()
     
     /// Track bindings that need to be unbound in __del__
@@ -923,6 +973,8 @@ public struct KvToPyClassGenerator {
         
         // Generate class body with properties and children
         nameCounter.reset()
+        selfContext.name = "self"
+        selfContext.widgetType = nil
         ruleContext.baseClasses = baseClasses
         ruleContext.selfProperties = pythonClasses.first(where: { $0.name == className })?.kivyProperties ?? []
         // Properties this rule declares are emitted as ObjectProperty below,
@@ -1567,7 +1619,7 @@ public struct KvToPyClassGenerator {
         
         if case .name = assign.value { return nil }
         
-        let expr = replaceRootWithSelf(assign.value)
+        let expr = resolveKvObjects(assign.value, selfName: selfContext.name)
         recordMetrics(in: expr)
         return expr
     }
@@ -1644,12 +1696,14 @@ public struct KvToPyClassGenerator {
             if case .module(let statements) = module,
                let firstStmt = statements.first,
                case .assign(let assign) = firstStmt {
-                let expr = replaceRootWithSelf(assign.value)
-                recordMetrics(in: expr)
-                
-                // Use visitor to extract watched keys
+                // Watched keys come off the unresolved tree so they still say
+                // `root` / `self`; bindableKeys needs to know which is which
+                // before they become variable names.
                 let visitor = PropertyExpressionVisitor()
-                visitor.visitExpression(expr)
+                visitor.visitExpression(assign.value)
+                
+                let expr = resolveKvObjects(assign.value, selfName: selfContext.name)
+                recordMetrics(in: expr)
                 return (expr, bindableKeys(visitor.watchedKeys))
             }
         } catch {
@@ -1671,19 +1725,65 @@ public struct KvToPyClassGenerator {
         var seen = Swift.Set<[String]>()
         return keys.compactMap { key -> [String]? in
             guard key.count == 2 else { return key }
-            let object = key[0] == "root" ? "self" : key[0]
-            if object == "self", !isBindableSelfProperty(key[1]) { return nil }
+            let property = key[1]
+            
+            let object: String
+            let bindable: Bool
+            switch key[0] {
+            case "root":
+                object = "self"
+                bindable = isBindableRuleProperty(property)
+            case "self":
+                object = selfContext.name
+                bindable = selfContext.widgetType.map { isBindableProperty(property, on: $0) }
+                    ?? isBindableRuleProperty(property)
+            default:
+                // app, or an id: nothing here can say what it is.
+                object = key[0]
+                bindable = true
+            }
+            guard bindable else { return nil }
+            
             // One expression can name the same property more than once; it
             // still only needs binding once.
-            return seen.insert([object, key[1]]).inserted ? [object, key[1]] : nil
+            return seen.insert([object, property]).inserted ? [object, property] : nil
         }
     }
     
-    private func isBindableSelfProperty(_ name: String) -> Bool {
+    /// Is `name` a property of the class this rule generates?
+    private func isBindableRuleProperty(_ name: String) -> Bool {
         if ruleContext.selfProperties.contains(name) { return true }
         return ruleContext.baseClasses.contains { base in
             KivyWidgetRegistry.getPropertyType(name, on: base) != nil
         }
+    }
+    
+    /// Is `name` a property of `widgetType`?
+    ///
+    /// The registry answers for anything Kivy ships. A widget defined by
+    /// another rule, or by a class in the .py, is resolved to its own
+    /// declarations and bases. A widget from outside the module cannot be
+    /// checked, so it is assumed bindable rather than silently dropped.
+    private func isBindableProperty(_ name: String, on widgetType: String) -> Bool {
+        if KivyWidgetRegistry.widgetExists(widgetType) {
+            return KivyWidgetRegistry.getPropertyType(name, on: widgetType) != nil
+        }
+        
+        if let pythonClass = pythonClasses.first(where: { $0.name == widgetType }) {
+            if pythonClass.kivyProperties.contains(name) { return true }
+            if pythonClass.baseClasses.contains(where: { isBindableProperty(name, on: $0) }) { return true }
+            // A class we can see in full: if it does not declare the property,
+            // it does not have one.
+            return false
+        }
+        
+        if let rule = module.rules.first(where: { resolvedClass(for: $0)?.name == widgetType }),
+           let resolved = resolvedClass(for: rule) {
+            if getCustomProperties(for: rule, baseClasses: resolved.bases).contains(name) { return true }
+            return resolved.bases.contains { isBindableProperty(name, on: $0) }
+        }
+        
+        return true
     }
     
     private func isEventHandler(_ property: KvProperty) -> Bool {
@@ -2277,6 +2377,17 @@ public struct KvToPyClassGenerator {
             defaultVarName = "\(shortPrefix)_\(nameCounter.take())"
         }
         let varName = widgetVarName ?? defaultVarName
+        
+        // Inside this block KV's `self` means this widget, not the rule root.
+        // Restored on the way out so siblings and the enclosing block are
+        // unaffected.
+        let enclosingSelf = (selfContext.name, selfContext.widgetType)
+        selfContext.name = varName
+        selfContext.widgetType = widget.name
+        defer {
+            selfContext.name = enclosingSelf.0
+            selfContext.widgetType = enclosingSelf.1
+        }
         
         // Separate properties that need binding from static ones
         var staticProperties: [KvProperty] = []

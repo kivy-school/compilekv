@@ -166,7 +166,7 @@ The Swift package builds as a WASI reactor exporting:
 | `kv_result_ptr()` / `kv_result_len()` | the generated source, or the error message |
 | `kv_result_free()` | release the result buffer |
 
-### `root` and bindings
+### `root`, `self`, and bindings
 
 `root` in KV is the widget the rule applies to, so it becomes `self`:
 
@@ -181,11 +181,27 @@ label_1.text = self.title
 self.bind(title=label_1.setter("text"))
 ```
 
-The `bind` call is only emitted when the attribute is a Kivy property --
-declared in the KV rule, inherited from a base widget, or assigned in your
-`.py` as `title = StringProperty("")`. A plain Python attribute gets the
-assignment alone, because `bind()` on a non-property raises. In a mixed
-expression the bindable names are bound and the rest are read once.
+`self` is the widget whose block the value was written in, so under a child
+it is that child, not the rule:
+
+```kv
+<Card>:
+    Label:
+        height: self.texture_size[1]
+```
+
+```python
+label_1.height = label_1.texture_size[1]
+label_1.bind(texture_size=_callback_0)
+```
+
+The `bind` call is only emitted when the attribute is a Kivy property of
+whichever object it is read from. That is answered by the widget registry for
+anything Kivy ships, by the rule for a widget another rule defines, and by the
+class itself for one in your `.py` -- `title = StringProperty("")` binds,
+`title = "x"` does not, because `bind()` on a non-property raises. A widget
+from outside the module cannot be checked, so it is assumed bindable. In a
+mixed expression the bindable names are bound and the rest are read once.
 
 ### Factory registration
 
