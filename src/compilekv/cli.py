@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .compiler import compile_file, find_kv_files
+from .compiler import Project, compile_file, find_kv_files
 from .runtime import KvCompileError, default_compiler
 
 
@@ -46,7 +46,10 @@ def run(argv: list[str] | None = None) -> int:
             print(f"error: {root} does not exist", file=sys.stderr)
             return 1
 
-    if not any(find_kv_files(root, recursive=not args.no_recursive) for root in roots):
+    # Everything is read before anything is written, so a `#:set` in the last
+    # file scanned is still available to the first file generated.
+    project = Project.scan(roots, recursive=not args.no_recursive)
+    if not project.kv_files:
         print("No .kv files found.", file=sys.stderr)
         return 1
 
@@ -58,7 +61,8 @@ def run(argv: list[str] | None = None) -> int:
                 written = compile_file(
                     kv_path,
                     _target_for(kv_path, root, args.output),
-                    compiler=compiler,
+                    compiler,
+                    project.constants,
                 )
             except KvCompileError as error:
                 print(f"error: {kv_path}: {error}", file=sys.stderr)

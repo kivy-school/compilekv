@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from .runtime import KvCompiler, default_compiler
@@ -40,6 +41,32 @@ def collect_constants(paths: Iterable[str | Path]) -> str:
             if SET_DIRECTIVE.match(line.strip()):
                 lines.append(line.strip())
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Project:
+    """The .kv files to compile, and everything they share.
+
+    Gathered in full before anything is generated, so a file can use a
+    `#:set` from a file that comes later in the walk -- a theme file is
+    usually last alphabetically and always needed first.
+    """
+
+    kv_files: tuple[Path, ...]
+    constants: str
+
+    @classmethod
+    def scan(cls, roots: str | Path | Iterable[str | Path], recursive: bool = True) -> "Project":
+        if isinstance(roots, (str, Path)):
+            roots = [roots]
+
+        kv_files: list[Path] = []
+        for root in roots:
+            for path in find_kv_files(root, recursive=recursive):
+                if path not in kv_files:
+                    kv_files.append(path)
+
+        return cls(tuple(kv_files), collect_constants(kv_files))
 
 
 def compile_file(
@@ -84,16 +111,15 @@ def compile_tree(
     root = Path(root)
     compiler = compiler or default_compiler()
 
-    # A `#:set` in any file in the tree is visible to all of them.
-    kv_files = find_kv_files(root, recursive=recursive)
-    constants = collect_constants(kv_files)
+    # Scan the whole tree before writing anything.
+    project = Project.scan(root, recursive=recursive)
 
     written = []
-    for kv_path in kv_files:
+    for kv_path in project.kv_files:
         target = None
         if output_dir is not None:
             # Mirror the tree under root so same-named .kv files cannot collide.
             relative = kv_path.parent.relative_to(root) if root.is_dir() else Path()
             target = Path(output_dir) / relative
-        written.append(compile_file(kv_path, target, compiler, constants))
+        written.append(compile_file(kv_path, target, compiler, project.constants))
     return written

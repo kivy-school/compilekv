@@ -119,3 +119,77 @@ def test_a_numeric_property_from_the_registry(compiler):
     """opacity is a NumericProperty on Widget, so a bare word is a name."""
     kv = "<Item@BoxLayout>:\n    opacity: SOME_GLOBAL\n"
     assert "self.opacity = SOME_GLOBAL" in compiler.compile_source(kv)
+
+
+# --- Scanning before generating ------------------------------------------
+
+
+def test_project_scan_gathers_every_file(tmp_path):
+    from compilekv import Project
+
+    (tmp_path / "a.kv").write_text("#:set a 1\n<A@Label>:\n    text: 'x'\n")
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "theme.kv").write_text("#:set b 2\n")
+
+    project = Project.scan(tmp_path)
+
+    assert len(project.kv_files) == 2
+    assert "#:set a 1" in project.constants
+    assert "#:set b 2" in project.constants
+
+
+def test_a_constant_from_a_file_scanned_later_still_applies(tmp_path, compiler):
+    """theme.kv sorts after widget.kv, so ordering must not matter."""
+    (tmp_path / "widget.kv").write_text("<Item@BoxLayout>:\n    font_size: plex_16\n")
+    (tmp_path / "zz_theme.kv").write_text("#:set plex_16 sp(16)\n")
+
+    written = compile_tree(tmp_path, tmp_path / "build", compiler=compiler)
+
+    widget = next(p for p in written if p.name == "widget.py")
+    assert "self.font_size = sp(16)" in widget.read_text()
+
+
+def test_the_module_entry_point_shares_constants(tmp_path):
+    import subprocess
+    import sys
+
+    (tmp_path / "widget.kv").write_text("<Item@BoxLayout>:\n    font_size: plex_16\n")
+    (tmp_path / "zz_theme.kv").write_text("#:set plex_16 sp(16)\n")
+    out = tmp_path / "build"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "compilekv", str(tmp_path), "-o", str(out)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "self.font_size = sp(16)" in (out / "widget.py").read_text()
+
+
+# --- Values written across several lines ---------------------------------
+
+
+def test_a_value_continued_over_lines(compiler):
+    kv = (
+        "#:set plex_16 sp(16)\n"
+        "#:set plex_20 sp(20)\n"
+        "\n"
+        "<Item@Label>:\n"
+        "    font_size:\n"
+        "        { \\\n"
+        '        "Small": plex_16, \\\n'
+        '        "Large": plex_20, \\\n'
+        "        }[self.parent.role]\n"
+    )
+    generated = compiler.compile_source(kv)
+    ast.parse(generated)
+    assert '{"Small": sp(16), "Large": sp(20)}[self.parent.role]' in generated
+
+
+def test_a_backslash_inside_a_string_is_left_alone(compiler):
+    """Continuations are only stripped when the value will not parse as written."""
+    kv = '<Item@Label>:\n    text: "a\\\\nb"\n'
+    generated = compiler.compile_source(kv)
+    ast.parse(generated)
+    assert "\\\\n" in generated

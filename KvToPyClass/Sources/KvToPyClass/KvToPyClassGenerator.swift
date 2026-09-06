@@ -1746,22 +1746,41 @@ public struct KvToPyClassGenerator {
     /// it is being assigned to cannot hold a string, in which case a string
     /// would be wrong no matter what.
     private func parseValue(_ valueStr: String, assignedTo propertyName: String? = nil) -> PySwiftAST.Expression? {
-        guard !valueStr.isEmpty,
-              let module = try? parsePython("_tmp = \(valueStr)"),
-              case .module(let statements) = module,
-              case .assign(let assign) = statements.first
-        else { return nil }
+        guard let assign = parseAssignedExpression(valueStr) else { return nil }
         
-        if case .name(let name) = assign.value {
+        if case .name(let name) = assign {
             if let constant = constants[name.id] {
                 return parseValue(constant, assignedTo: propertyName)
             }
             guard let propertyName, holdsNonStringValue(propertyName) else { return nil }
         }
         
-        let expr = substitutingConstants(in: resolveKvObjects(assign.value, selfName: selfContext.name))
+        let expr = substitutingConstants(in: resolveKvObjects(assign, selfName: selfContext.name))
         recordMetrics(in: expr)
         return expr
+    }
+    
+    /// Parse a KV property value as a Python expression.
+    ///
+    /// A value written across several lines reaches us with its continuation
+    /// backslashes still in it, joined onto one line, which Python will not
+    /// parse. Those are only stripped as a second attempt, so a backslash that
+    /// means something -- inside a string literal -- is left alone whenever the
+    /// value parses as written.
+    private func parseAssignedExpression(_ valueStr: String) -> PySwiftAST.Expression? {
+        guard !valueStr.isEmpty else { return nil }
+        
+        func parse(_ source: String) -> PySwiftAST.Expression? {
+            guard let module = try? parsePython("_tmp = \(source)"),
+                  case .module(let statements) = module,
+                  case .assign(let assign) = statements.first
+            else { return nil }
+            return assign.value
+        }
+        
+        if let expr = parse(valueStr) { return expr }
+        guard valueStr.contains("\\") else { return nil }
+        return parse(valueStr.replacingOccurrences(of: "\\", with: " "))
     }
     
     /// Replace `#:set` names anywhere in an expression, so `plex_16 + 4` works
@@ -1888,33 +1907,20 @@ public struct KvToPyClassGenerator {
     
     /// Parse property value as Python expression and extract watched keys using visitor
     private func parsePropertyExpression(_ property: KvProperty) -> (PySwiftAST.Expression?, [[String]]) {
-        let valueStr = property.value.trimmingCharacters(in: .whitespaces)
-        
-        // Try to parse as Python expression by wrapping it in an assignment
-        do {
-            let code = "_tmp = \(valueStr)"
-            let module = try parsePython(code)
-            
-            // Extract the expression from the assignment
-            if case .module(let statements) = module,
-               let firstStmt = statements.first,
-               case .assign(let assign) = firstStmt {
-                // Watched keys come off the unresolved tree so they still say
-                // `root` / `self`; bindableKeys needs to know which is which
-                // before they become variable names.
-                let visitor = PropertyExpressionVisitor()
-                visitor.visitExpression(assign.value)
-                
-                let expr = resolveKvObjects(assign.value, selfName: selfContext.name)
-                recordMetrics(in: expr)
-                return (expr, bindableKeys(visitor.watchedKeys))
-            }
-        } catch {
-            // If parsing fails, fall back to the pre-computed watchedKeys
+        guard let parsed = parseAssignedExpression(property.value.trimmingCharacters(in: .whitespaces)) else {
+            // Fall back to the watched keys the KV parser worked out.
             return (nil, bindableKeys(property.watchedKeys ?? []))
         }
         
-        return (nil, bindableKeys(property.watchedKeys ?? []))
+        // Watched keys come off the unresolved tree so they still say
+        // `root` / `self`; bindableKeys needs to know which is which before
+        // they become variable names.
+        let visitor = PropertyExpressionVisitor()
+        visitor.visitExpression(parsed)
+        
+        let expr = substitutingConstants(in: resolveKvObjects(parsed, selfName: selfContext.name))
+        recordMetrics(in: expr)
+        return (expr, bindableKeys(visitor.watchedKeys))
     }
     
     /// Watched keys with `root` renamed to `self`, dropping the ones that are
@@ -2000,13 +2006,17 @@ public struct KvToPyClassGenerator {
         // Parse the expression and extract watched keys using visitor
         let (parsedExpr, watchedKeys) = parsePropertyExpression(property)
         
-        // For simple property bindings like "app.title" use direct assignment
-        // For complex expressions like f-strings or str() use the parsed expression
-        let isSimpleBinding = watchedKeys.count == 1 && 
-                             watchedKeys[0].count == 2 && 
-                             !valueStr.contains("(") && 
-                             !valueStr.hasPrefix("f\"") && 
-                             !valueStr.hasPrefix("f'")
+        // Simple means the value is nothing but `obj.prop`. That is a question
+        // about the parsed expression, not about what characters the source
+        // happens to contain: `{...}[self.parent.role]` watches one key and has
+        // no parentheses, but assigning `self.parent` to the property would be
+        // nonsense.
+        let isSimpleBinding: Bool
+        if case .attribute = parsedExpr, watchedKeys.count == 1, watchedKeys[0].count == 2 {
+            isSimpleBinding = true
+        } else {
+            isSimpleBinding = false
+        }
         
         if isSimpleBinding, let firstKey = watchedKeys.first {
             // Simple case: app.some_prop -> self.property = app.some_prop
