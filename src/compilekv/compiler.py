@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from pathlib import Path
 
 from .runtime import KvCompiler, default_compiler
@@ -23,10 +25,28 @@ def source_path_for(kv_path: str | Path) -> Path:
     return Path(kv_path).with_suffix(".py")
 
 
+SET_DIRECTIVE = re.compile(r"^#:set\s+\S+\s+\S.*$")
+
+
+def collect_constants(paths: Iterable[str | Path]) -> str:
+    """The `#:set` lines from every given .kv file.
+
+    KV shares these across a project -- a theme file defines them and every
+    other file uses them -- so compiling one file needs the others' directives.
+    """
+    lines = []
+    for path in paths:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            if SET_DIRECTIVE.match(line.strip()):
+                lines.append(line.strip())
+    return "\n".join(lines)
+
+
 def compile_file(
     kv_path: str | Path,
     output: str | Path | None = None,
     compiler: KvCompiler | None = None,
+    constants: str = "",
 ) -> Path:
     """Compile one .kv, extending the .py next to it. Returns the file written."""
     kv_path = Path(kv_path)
@@ -36,7 +56,9 @@ def compile_file(
     source = source_path_for(kv_path)
     py_source = source.read_text(encoding="utf-8") if source.is_file() else ""
 
-    generated = compiler.compile_source(kv_path.read_text(encoding="utf-8"), py_source)
+    generated = compiler.compile_source(
+        kv_path.read_text(encoding="utf-8"), py_source, constants
+    )
 
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(generated, encoding="utf-8")
@@ -62,12 +84,16 @@ def compile_tree(
     root = Path(root)
     compiler = compiler or default_compiler()
 
+    # A `#:set` in any file in the tree is visible to all of them.
+    kv_files = find_kv_files(root, recursive=recursive)
+    constants = collect_constants(kv_files)
+
     written = []
-    for kv_path in find_kv_files(root, recursive=recursive):
+    for kv_path in kv_files:
         target = None
         if output_dir is not None:
             # Mirror the tree under root so same-named .kv files cannot collide.
             relative = kv_path.parent.relative_to(root) if root.is_dir() else Path()
             target = Path(output_dir) / relative
-        written.append(compile_file(kv_path, target, compiler=compiler))
+        written.append(compile_file(kv_path, target, compiler, constants))
     return written

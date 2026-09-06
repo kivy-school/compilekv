@@ -7,16 +7,17 @@ public struct PythonClassInfo {
     public let baseClasses: [String]
     public let methods: [Statement]  // Store actual AST nodes for methods (excluding __init__)
     public let classDefAST: ClassDef  // Store the entire class AST
-    /// Class level Kivy properties, e.g. `name = StringProperty("")`. These are
-    /// bindable, unlike a plain attribute.
-    public let kivyProperties: Swift.Set<String>
+    /// Class level Kivy properties by name, e.g. `name: "StringProperty"`.
+    /// These are bindable, unlike a plain attribute, and the type says what
+    /// kind of value the property can hold.
+    public let kivyProperties: [String: String]
     
     public init(
         name: String,
         baseClasses: [String],
         methods: [Statement],
         classDefAST: ClassDef,
-        kivyProperties: Swift.Set<String> = []
+        kivyProperties: [String: String] = [:]
     ) {
         self.name = name
         self.baseClasses = baseClasses
@@ -99,8 +100,8 @@ public struct PythonClassParser {
     }
     
     /// Class level assignments of a Kivy property, e.g. `name = StringProperty("")`.
-    private func extractKivyProperties(from classDef: ClassDef) -> Swift.Set<String> {
-        var names = Swift.Set<String>()
+    private func extractKivyProperties(from classDef: ClassDef) -> [String: String] {
+        var properties: [String: String] = [:]
         for statement in classDef.body {
             guard case .assign(let assign) = statement,
                   case .call(let call) = assign.value,
@@ -109,10 +110,10 @@ public struct PythonClassParser {
             else { continue }
             for target in assign.targets {
                 if case .name(let name) = target {
-                    names.insert(name.id)
+                    properties[name.id] = callee.id
                 }
             }
         }
-        return names
+        return properties
     }
 }

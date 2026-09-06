@@ -89,20 +89,32 @@ class KvCompiler:
             return ""
         return bytes(self._memory.read(self._store, pointer, pointer + length)).decode("utf-8")
 
-    def compile_source(self, kv_source: str, py_source: str = "") -> str:
-        """Convert KV source to Python. `py_source` is the existing .py, if any."""
+    def compile_source(
+        self, kv_source: str, py_source: str = "", constants: str = ""
+    ) -> str:
+        """Convert KV source to Python.
+
+        `py_source` is the existing .py, if any. `constants` holds `#:set`
+        directives from other KV files, which KV shares across a project.
+        """
         with self._lock:
             kv_ptr, kv_len = self._write(kv_source.encode("utf-8"))
             py_ptr, py_len = self._write(py_source.encode("utf-8"))
+            const_ptr, const_len = self._write(constants.encode("utf-8"))
             try:
-                status = self._convert(self._store, kv_ptr, kv_len, py_ptr, py_len)
+                status = self._convert(
+                    self._store, kv_ptr, kv_len, py_ptr, py_len, const_ptr, const_len
+                )
                 output = self._take_result()
                 self._result_free(self._store)
             finally:
-                if kv_len:
-                    self._dealloc(self._store, kv_ptr, kv_len)
-                if py_len:
-                    self._dealloc(self._store, py_ptr, py_len)
+                for pointer, length in (
+                    (kv_ptr, kv_len),
+                    (py_ptr, py_len),
+                    (const_ptr, const_len),
+                ):
+                    if length:
+                        self._dealloc(self._store, pointer, length)
 
         if status != 0:
             raise KvCompileError(output or "unknown error")

@@ -203,6 +203,38 @@ class itself for one in your `.py` -- `title = StringProperty("")` binds,
 from outside the module cannot be checked, so it is assumed bindable. In a
 mixed expression the bindable names are bound and the rest are read once.
 
+### `#:set` constants
+
+KV's `#:set` directives are substituted into the generated code, since there is
+no Builder at runtime to resolve them:
+
+```kv
+#:set plex_16 sp(16)
+
+<Item>:
+    font_size: plex_16
+```
+
+```python
+from kivy.metrics import sp
+...
+self.font_size = sp(16)
+```
+
+They are shared across a project the way KV shares them -- a theme file defines
+them and every other file uses them -- so `compile_tree` gathers the `#:set`
+lines from every `.kv` under the root and hands them to each file. A `#:set` in
+the file itself wins over a shared one. `collect_constants(paths)` exposes the
+gathering, and `compile_file(..., constants=...)` takes the result.
+
+### Declared property types
+
+A bare unquoted word normally becomes a string, but not when the property it is
+assigned to cannot hold one. `font_size: SOME_GLOBAL` on a `NumericProperty`
+emits the name, not `"SOME_GLOBAL"`. The type comes from the widget registry or
+from the property your class declares, so `my_size = NumericProperty()` in your
+`.py` is taken into account.
+
 ### Canvas
 
 A canvas layer becomes a `with` block, the way it is written by hand:

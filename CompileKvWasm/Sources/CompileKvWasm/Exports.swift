@@ -43,18 +43,25 @@ public func kv_dealloc(_ pointer: UnsafeMutableRawPointer?, _ size: Int32) {
 
 /// Returns 0 on success, 1 on failure. Either way the result buffer holds the
 /// generated code or the error description.
+///
+/// `constants` carries `#:set` directives from other KV files. They are passed
+/// separately rather than pasted onto the front of the source so parser error
+/// line numbers still match the file the caller is looking at.
 @_expose(wasm, "kv_convert")
 @_cdecl("kv_convert")
 public func kv_convert(
     _ kvPointer: UnsafeRawPointer?,
     _ kvLength: Int32,
     _ pyPointer: UnsafeRawPointer?,
-    _ pyLength: Int32
+    _ pyLength: Int32,
+    _ constantsPointer: UnsafeRawPointer?,
+    _ constantsLength: Int32
 ) -> Int32 {
     do {
         storeResult(try convert(
             kvSource: string(from: kvPointer, length: kvLength),
-            pySource: string(from: pyPointer, length: pyLength)
+            pySource: string(from: pyPointer, length: pyLength),
+            constantsSource: string(from: constantsPointer, length: constantsLength)
         ))
         return 0
     } catch {
