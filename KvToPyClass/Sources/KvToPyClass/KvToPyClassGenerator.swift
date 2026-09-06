@@ -363,7 +363,10 @@ private func replaceAllSelfWithInstance(_ expr: PySwiftAST.Expression) -> PySwif
 /// Python has to import them.
 private final class MetricsCollector {
     static let functions: Swift.Set<String> = ["dp", "sp", "pt", "mm", "cm", "inch"]
-    var used = Swift.Set<String>()
+    /// Every name any generated value reads, so `#:import` aliases that are
+    /// actually used can be imported and the rest left out.
+    var names = Swift.Set<String>()
+    var used: Swift.Set<String> { names.intersection(Self.functions) }
 }
 
 /// What KV's `self` refers to right now: the rule root by default, or the
@@ -424,6 +427,9 @@ public struct KvToPyClassGenerator {
     /// Builder substitutes them at load time; generated Python has no Builder,
     /// so they are substituted here.
     private let constants: [String: String]
+    /// `#:import alias package.path`, which KV resolves into its own namespace.
+    /// Generated Python needs a real import for each one it uses.
+    private let importDirectives: [String: String]
 
     public init(
         module: KvModule,
@@ -438,12 +444,19 @@ public struct KvToPyClassGenerator {
         // Shared first, so a `#:set` in this file overrides the same name from
         // another one.
         var constants: [String: String] = [:]
+        var imports: [String: String] = [:]
         for directive in sharedDirectives + module.directives {
-            if case .set(let name, let value, _) = directive {
+            switch directive {
+            case .set(let name, let value, _):
                 constants[name] = value
+            case .import(let alias, let package, _):
+                imports[alias] = package
+            default:
+                break
             }
         }
         self.constants = constants
+        self.importDirectives = imports
     }
 
     public init(module: KvModule, existing: PythonModuleInfo, sharedDirectives: [KvDirective] = []) {
@@ -473,6 +486,8 @@ public struct KvToPyClassGenerator {
         let needsFactory = !external.isEmpty || !registrations.isEmpty
         
         var imports = generateImports(for: referenced.subtracting(external))
+        
+        imports.append(contentsOf: directiveImports())
         
         // Populated while the classes above were generated.
         if !metrics.used.isEmpty {
@@ -524,6 +539,36 @@ public struct KvToPyClassGenerator {
     private func isDefinedHere(_ name: String) -> Bool {
         if pythonClasses.contains(where: { $0.name == name }) { return true }
         return module.rules.contains { resolvedClass(for: $0)?.name == name }
+    }
+    
+    /// An import for each `#:import` alias the generated code actually reads.
+    ///
+    /// `#:import get_font_name carbonkivy.utils.get_font_name` becomes
+    /// `from carbonkivy.utils import get_font_name`. The last segment may name
+    /// a module or an attribute of one; `from parent import last` covers both.
+    private func directiveImports() -> [Statement] {
+        var statements: [Statement] = []
+        for alias in importDirectives.keys.sorted() where metrics.names.contains(alias) {
+            guard let package = importDirectives[alias] else { continue }
+            
+            let parts = package.split(separator: ".").map(String.init)
+            guard let last = parts.last else { continue }
+            
+            if parts.count == 1 {
+                statements.append(.importStmt(Import(
+                    names: [Alias(name: package, asName: alias == package ? nil : alias)],
+                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                )))
+            } else {
+                statements.append(.importFrom(ImportFrom(
+                    module: parts.dropLast().joined(separator: "."),
+                    names: [Alias(name: last, asName: alias == last ? nil : alias)],
+                    level: 0,
+                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                )))
+            }
+        }
+        return statements
     }
     
     /// `MyWidget = Factory.MyWidget`
@@ -1344,7 +1389,12 @@ public struct KvToPyClassGenerator {
     }
     
     /// Assign the rule's own properties, then bind the reactive ones.
-    private func appendProperties(_ properties: [KvProperty], to body: inout [Statement]) throws {
+    private func appendProperties(
+        _ properties: [KvProperty],
+        to body: inout [Statement],
+        bindings: inout [BindingInfo],
+        callbackCounter: inout Int
+    ) throws {
         for property in properties {
             if needsBinding(property) {
                 body.append(try generatePropertyBinding(property))
@@ -1365,10 +1415,18 @@ public struct KvToPyClassGenerator {
         
         // Bind calls come after the assignments, so the initial values are all
         // in place before anything can fire.
-        for property in properties {
-            if needsBinding(property), let bindCall = generateBindingCall(property) {
-                body.append(bindCall)
-            }
+        //
+        // Same binder the children use, with `self` as the target: a plain
+        // `obj.prop` value becomes a setter, anything else becomes a callback
+        // that recomputes the expression. Handing a setter a value it was
+        // never meant to hold -- the new `variant` where a `size_hint` tuple
+        // belongs -- is how this used to break.
+        for property in properties where needsBinding(property) {
+            let (statements, infos) = generateChildPropertyBinding(
+                property, widgetVarName: "self", callbackCounter: &callbackCounter
+            )
+            body.append(contentsOf: statements)
+            bindings.append(contentsOf: infos)
         }
     }
     
@@ -1477,7 +1535,7 @@ public struct KvToPyClassGenerator {
         
         // Set properties (self.property = value)
         // Event handlers are in rule.handlers, not rule.properties
-        try appendProperties(immediate, to: &body)
+        try appendProperties(immediate, to: &body, bindings: &bindings, callbackCounter: &callbackCounter)
         
         // Add event handler bindings (on_press, on_release, etc.)
         for handler in rule.handlers {
@@ -1494,7 +1552,7 @@ public struct KvToPyClassGenerator {
         }
         
         // Now the ids they name are real variables.
-        try appendProperties(deferred, to: &body)
+        try appendProperties(deferred, to: &body, bindings: &bindings, callbackCounter: &callbackCounter)
         
         // Add canvas instructions if present
         if let canvasBefore = rule.canvasBefore, !canvasBefore.instructions.isEmpty {
@@ -1719,12 +1777,6 @@ public struct KvToPyClassGenerator {
     private func propertyValueToExpression(_ property: KvProperty) throws -> PySwiftAST.Expression {
         let valueStr = property.value.trimmingCharacters(in: .whitespaces)
         
-        // Bindings are rewritten into bind() calls elsewhere; this string is a
-        // placeholder those paths recognise.
-        if valueStr.contains("app.") || valueStr.contains("self.") || valueStr.contains("root.") {
-            return .constant(makeConstant(.string(valueStr)))
-        }
-        
         if let expr = parseValue(valueStr, assignedTo: property.name) {
             return expr
         }
@@ -1762,11 +1814,9 @@ public struct KvToPyClassGenerator {
     
     /// Parse a KV property value as a Python expression.
     ///
-    /// A value written across several lines reaches us with its continuation
-    /// backslashes still in it, joined onto one line, which Python will not
-    /// parse. Those are only stripped as a second attempt, so a backslash that
-    /// means something -- inside a string literal -- is left alone whenever the
-    /// value parses as written.
+    /// Two repairs are tried, and only after the value has failed to parse as
+    /// written, so text that means something -- a backslash or a trailing dot
+    /// inside a string literal -- is left alone whenever it can be.
     private func parseAssignedExpression(_ valueStr: String) -> PySwiftAST.Expression? {
         guard !valueStr.isEmpty else { return nil }
         
@@ -1779,8 +1829,34 @@ public struct KvToPyClassGenerator {
         }
         
         if let expr = parse(valueStr) { return expr }
-        guard valueStr.contains("\\") else { return nil }
-        return parse(valueStr.replacingOccurrences(of: "\\", with: " "))
+        
+        // A value spread over several lines arrives with its continuation
+        // backslashes still in it, joined onto one line.
+        let joined = valueStr.contains("\\")
+            ? valueStr.replacingOccurrences(of: "\\", with: " ")
+            : valueStr
+        if joined != valueStr, let expr = parse(joined) { return expr }
+        
+        // `2.` is a float to Python but not to the parser we use.
+        let padded = paddingBareFloats(in: joined)
+        if padded != joined, let expr = parse(padded) { return expr }
+        
+        return nil
+    }
+    
+    /// Turn `2.` into `2.0`, leaving `2.5` and `self.x` alone.
+    private func paddingBareFloats(in source: String) -> String {
+        let characters = Array(source)
+        var result = ""
+        for (index, character) in characters.enumerated() {
+            result.append(character)
+            let followsDigit = index > 0 && characters[index - 1].isNumber
+            let precedesDigit = index + 1 < characters.count && characters[index + 1].isNumber
+            if character == "." && followsDigit && !precedesDigit {
+                result.append("0")
+            }
+        }
+        return result
     }
     
     /// Replace `#:set` names anywhere in an expression, so `plex_16 + 4` works
@@ -1849,7 +1925,7 @@ public struct KvToPyClassGenerator {
     /// Note any kivy.metrics helper the expression calls, so generate() can
     /// import it.
     private func recordMetrics(in expr: PySwiftAST.Expression) {
-        metrics.used.formUnion(namesUsed(in: expr).intersection(MetricsCollector.functions))
+        metrics.names.formUnion(namesUsed(in: expr))
     }
     
     private func namesUsed(in expr: PySwiftAST.Expression) -> Swift.Set<String> {
@@ -2674,29 +2750,27 @@ public struct KvToPyClassGenerator {
             bindings.append(contentsOf: bindingInfos)
         }
         
-        // If widget has an id, store it in self.ids
-        if let widgetId = widgetId {
-            let storeInIds = Assign(
-                targets: [.attribute(
-                    Attribute(
-                        value: .attribute(
-                            Attribute(
-                                value: .name(makeName("self")),
-                                attr: "ids",
-                                ctx: .load,
-                                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                            )
-                        ),
-                        attr: widgetId,
-                        ctx: .store,
+        // An id is the local variable, and generated code refers to it that
+        // way. It is also published in self.ids, because that is where hand
+        // written code looks for it -- as a dict entry, which is what `x in
+        // self.ids` and `self.ids.x` both read.
+        if let widgetId {
+            statements.append(.assign(Assign(
+                targets: [.subscriptExpr(Subscript(
+                    value: .attribute(Attribute(
+                        value: .name(makeName("self")),
+                        attr: "ids",
+                        ctx: .load,
                         lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                    )
-                )],
+                    )),
+                    slice: .constant(makeConstant(.string(widgetId))),
+                    ctx: .store,
+                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                ))],
                 value: .name(makeName(varName)),
                 typeComment: nil,
                 lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-            )
-            statements.append(.assign(storeInIds))
+            )))
         }
         
         // The widget's own canvas layers. `self` inside them is this widget,

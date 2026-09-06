@@ -62,7 +62,7 @@ def run(argv: list[str] | None = None) -> int:
                     kv_path,
                     _target_for(kv_path, root, args.output),
                     compiler,
-                    project.constants,
+                    project.directives,
                 )
             except KvCompileError as error:
                 print(f"error: {kv_path}: {error}", file=sys.stderr)

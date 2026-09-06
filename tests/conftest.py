@@ -54,11 +54,20 @@ def fake_kivy(monkeypatch):
     import sys
     import types
 
+    class Ids(dict):
+        """Kivy's ids: a dict that also reads back as attributes."""
+
+        def __getattr__(self, name):
+            try:
+                return self[name]
+            except KeyError as error:
+                raise AttributeError(name) from error
+
     class Widget:
         def __init__(self, **kwargs):
             self.__dict__.update(kwargs)
             self.children = []
-            self.ids = types.SimpleNamespace()
+            self.ids = Ids()
             self.width = 0
 
         def add_widget(self, widget):

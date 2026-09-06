@@ -203,7 +203,7 @@ class itself for one in your `.py` -- `title = StringProperty("")` binds,
 from outside the module cannot be checked, so it is assumed bindable. In a
 mixed expression the bindable names are bound and the rest are read once.
 
-### `#:set` constants
+### Directives
 
 KV's `#:set` directives are substituted into the generated code, since there is
 no Builder at runtime to resolve them:
@@ -221,11 +221,25 @@ from kivy.metrics import sp
 self.font_size = sp(16)
 ```
 
-They are shared across a project the way KV shares them -- a theme file defines
-them and every other file uses them -- so `compile_tree` gathers the `#:set`
-lines from every `.kv` under the root and hands them to each file. A `#:set` in
-the file itself wins over a shared one. `collect_constants(paths)` exposes the
-gathering, and `compile_file(..., constants=...)` takes the result.
+`#:import` becomes a real import, but only for the names the generated code
+actually reads:
+
+```kv
+#:import get_font_name carbonkivy.utils.get_font_name
+```
+
+```python
+from carbonkivy.utils import get_font_name
+```
+
+KV puts both kinds in one namespace shared by everything Builder loads, so the
+whole project is read before anything is written. `Project.scan(roots)` walks
+every `.kv` -- and every `.py`, since KV passed to `Builder.load_string()`
+carries directives the `.kv` files rely on -- and `compile_tree` and
+`python -m compilekv` both go through it. Nothing depends on which file is
+walked first. A `#:set` in the file itself wins over a shared one.
+`collect_directives(paths)` exposes the gathering, and
+`compile_file(..., directives=...)` takes the result.
 
 ### Declared property types
 

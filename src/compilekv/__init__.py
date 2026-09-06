@@ -11,7 +11,7 @@ platform independent. `python -m compilekv` exists but is not the interface.
 
 from .compiler import (
     Project,
-    collect_constants,
+    collect_directives,
     compile_file,
     compile_tree,
     find_kv_files,
@@ -24,7 +24,7 @@ __all__ = [
     "Project",
     "KvCompileError",
     "KvCompiler",
-    "collect_constants",
+    "collect_directives",
     "compile_file",
     "compile_tree",
     "default_compiler",

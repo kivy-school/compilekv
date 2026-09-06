@@ -4,7 +4,7 @@ import ast
 
 import pytest
 
-from compilekv import collect_constants, compile_tree
+from compilekv import collect_directives, compile_tree
 
 THEME = "#:set plex_16 sp(16)\n#:set plex_20 sp(20)\n#:set brand (0.29, 0.69, 0.31, 1)\n"
 
@@ -46,15 +46,15 @@ def test_an_unknown_bare_word_is_still_a_string(compiler):
 # --- Sharing across files -------------------------------------------------
 
 
-def test_collect_constants_reads_the_set_lines(tmp_path):
+def test_collect_directives_reads_the_set_lines(tmp_path):
     (tmp_path / "theme.kv").write_text(THEME + "<Ignored@Label>:\n    text: 'x'\n")
-    collected = collect_constants([tmp_path / "theme.kv"])
+    collected = collect_directives([tmp_path / "theme.kv"])
     assert collected.splitlines() == THEME.strip().splitlines()
 
 
-def test_collect_constants_ignores_other_directives(tmp_path):
+def test_collect_directives_keeps_set_and_import(tmp_path):
     (tmp_path / "a.kv").write_text("#:kivy 2.0\n#:import os os\n#:set a 1\n")
-    assert collect_constants([tmp_path / "a.kv"]) == "#:set a 1"
+    assert collect_directives([tmp_path / "a.kv"]).splitlines() == ["#:import os os", "#:set a 1"]
 
 
 def test_a_constant_from_another_file_is_used(compiler):
@@ -134,8 +134,8 @@ def test_project_scan_gathers_every_file(tmp_path):
     project = Project.scan(tmp_path)
 
     assert len(project.kv_files) == 2
-    assert "#:set a 1" in project.constants
-    assert "#:set b 2" in project.constants
+    assert "#:set a 1" in project.directives
+    assert "#:set b 2" in project.directives
 
 
 def test_a_constant_from_a_file_scanned_later_still_applies(tmp_path, compiler):

@@ -90,17 +90,18 @@ class KvCompiler:
         return bytes(self._memory.read(self._store, pointer, pointer + length)).decode("utf-8")
 
     def compile_source(
-        self, kv_source: str, py_source: str = "", constants: str = ""
+        self, kv_source: str, py_source: str = "", directives: str = ""
     ) -> str:
         """Convert KV source to Python.
 
-        `py_source` is the existing .py, if any. `constants` holds `#:set`
-        directives from other KV files, which KV shares across a project.
+        `py_source` is the existing .py, if any. `directives` holds `#:set`
+        and `#:import` lines from other KV files, which KV shares across a
+        project.
         """
         with self._lock:
             kv_ptr, kv_len = self._write(kv_source.encode("utf-8"))
             py_ptr, py_len = self._write(py_source.encode("utf-8"))
-            const_ptr, const_len = self._write(constants.encode("utf-8"))
+            const_ptr, const_len = self._write(directives.encode("utf-8"))
             try:
                 status = self._convert(
                     self._store, kv_ptr, kv_len, py_ptr, py_len, const_ptr, const_len

@@ -26,20 +26,30 @@ def source_path_for(kv_path: str | Path) -> Path:
     return Path(kv_path).with_suffix(".py")
 
 
-SET_DIRECTIVE = re.compile(r"^#:set\s+\S+\s+\S.*$")
+# `#: set` with a space is as valid as `#:set`.
+SHARED_DIRECTIVE = re.compile(r"^#:\s*(set|import)\s+\S+\s+\S.*$")
 
 
-def collect_constants(paths: Iterable[str | Path]) -> str:
-    """The `#:set` lines from every given .kv file.
+def collect_directives(paths: Iterable[str | Path]) -> str:
+    """The `#:set` and `#:import` lines from every given file.
 
-    KV shares these across a project -- a theme file defines them and every
-    other file uses them -- so compiling one file needs the others' directives.
+    KV puts both in one namespace shared by everything Builder loads -- a
+    theme file defines the constants, one widget file imports a helper another
+    one uses -- so compiling any file needs the directives from all of them.
+
+    Python files are worth reading for the same reason: KV passed to
+    `Builder.load_string()` carries directives that the .kv files rely on.
     """
-    lines = []
+    lines: list[str] = []
     for path in paths:
-        for line in Path(path).read_text(encoding="utf-8").splitlines():
-            if SET_DIRECTIVE.match(line.strip()):
-                lines.append(line.strip())
+        try:
+            source = Path(path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        for line in source.splitlines():
+            stripped = line.strip()
+            if SHARED_DIRECTIVE.match(stripped) and stripped not in lines:
+                lines.append(stripped)
     return "\n".join(lines)
 
 
@@ -53,12 +63,13 @@ class Project:
     """
 
     kv_files: tuple[Path, ...]
-    constants: str
+    directives: str
 
     @classmethod
     def scan(cls, roots: str | Path | Iterable[str | Path], recursive: bool = True) -> "Project":
         if isinstance(roots, (str, Path)):
             roots = [roots]
+        roots = [Path(root) for root in roots]
 
         kv_files: list[Path] = []
         for root in roots:
@@ -66,14 +77,22 @@ class Project:
                 if path not in kv_files:
                     kv_files.append(path)
 
-        return cls(tuple(kv_files), collect_constants(kv_files))
+        # Python files can hold KV too, inside Builder.load_string(), and the
+        # directives in it are shared with every .kv file.
+        sources = list(kv_files)
+        pattern = "**/*.py" if recursive else "*.py"
+        for root in roots:
+            directory = root if root.is_dir() else root.parent
+            sources.extend(sorted(p for p in directory.glob(pattern) if p.is_file()))
+
+        return cls(tuple(kv_files), collect_directives(sources))
 
 
 def compile_file(
     kv_path: str | Path,
     output: str | Path | None = None,
     compiler: KvCompiler | None = None,
-    constants: str = "",
+    directives: str = "",
 ) -> Path:
     """Compile one .kv, extending the .py next to it. Returns the file written."""
     kv_path = Path(kv_path)
@@ -84,7 +103,7 @@ def compile_file(
     py_source = source.read_text(encoding="utf-8") if source.is_file() else ""
 
     generated = compiler.compile_source(
-        kv_path.read_text(encoding="utf-8"), py_source, constants
+        kv_path.read_text(encoding="utf-8"), py_source, directives
     )
 
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -121,5 +140,5 @@ def compile_tree(
             # Mirror the tree under root so same-named .kv files cannot collide.
             relative = kv_path.parent.relative_to(root) if root.is_dir() else Path()
             target = Path(output_dir) / relative
-        written.append(compile_file(kv_path, target, compiler, project.constants))
+        written.append(compile_file(kv_path, target, compiler, project.directives))
     return written
