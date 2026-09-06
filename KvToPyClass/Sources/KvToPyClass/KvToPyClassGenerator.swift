@@ -898,6 +898,7 @@ public struct KvToPyClassGenerator {
         var types = Swift.Set<String>()
         
         for rule in module.rules {
+            collectGraphicsTypesFromChildren(rule.children, into: &types)
             // Check canvas.before
             if let canvasBefore = rule.canvasBefore {
                 for instruction in canvasBefore.instructions {
@@ -921,6 +922,17 @@ public struct KvToPyClassGenerator {
         }
         
         return types
+    }
+    
+    private func collectGraphicsTypesFromChildren(_ children: [KvWidget], into types: inout Swift.Set<String>) {
+        for child in children {
+            for layer in [child.canvasBefore, child.canvas, child.canvasAfter].compactMap({ $0 }) {
+                for instruction in layer.instructions {
+                    types.insert(instruction.instructionType)
+                }
+            }
+            collectGraphicsTypesFromChildren(child.children, into: &types)
+        }
     }
     
     /// Check if canvas instructions contain app bindings
@@ -2486,6 +2498,21 @@ public struct KvToPyClassGenerator {
             statements.append(.assign(storeInIds))
         }
         
+        // The widget's own canvas layers. `self` inside them is this widget,
+        // which the scope set above already takes care of.
+        for (instructions, layer) in [
+            (widget.canvasBefore?.instructions, "before"),
+            (widget.canvas?.instructions, nil),
+            (widget.canvasAfter?.instructions, "after"),
+        ] as [([KvCanvasInstruction]?, String?)] {
+            guard let instructions, !instructions.isEmpty else { continue }
+            let (canvasStmts, canvasBindings) = try generateCanvasInstructions(
+                instructions, layer: layer, callbackCounter: &callbackCounter
+            )
+            statements.append(contentsOf: canvasStmts)
+            bindings.append(contentsOf: canvasBindings)
+        }
+        
         // Add children to this widget recursively
         for child in widget.children {
             let (childStmts, childBindings) = try createAndAddChildWidget(child, parentName: varName, callbackCounter: &callbackCounter)
@@ -2548,233 +2575,100 @@ public struct KvToPyClassGenerator {
     
     /// Generate canvas instructions for a given layer
     /// Returns tuple of (statements, bindings)
+    /// A canvas layer, written the way Kivy is written by hand:
+    ///
+    ///     with self.canvas.before:
+    ///         Color(rgba=(1, 0, 0, 1))
+    ///         self.rectangle_1 = Rectangle(pos=self.pos, size=self.size)
+    ///     self.bind(pos=_callback_0, size=_callback_1)
+    ///
+    /// An instruction whose properties track something is named, so the
+    /// bindings have an object to update; the rest stay anonymous. The
+    /// bindings go after the block, where the names exist.
     private func generateCanvasInstructions(_ instructions: [KvCanvasInstruction], layer: String?, callbackCounter: inout Int) throws -> ([Statement], [BindingInfo]) {
-        var statements: [Statement] = []
+        guard !instructions.isEmpty else { return ([], []) }
+        
+        var body: [Statement] = []
+        var updates: [Statement] = []
         var bindings: [BindingInfo] = []
         
-        // Determine canvas attribute (self.canvas, self.canvas.before, or self.canvas.after)
-        let canvasAttr: PySwiftAST.Expression
-        if let layer = layer {
-            canvasAttr = .attribute(
-                Attribute(
-                    value: .attribute(
-                        Attribute(
-                            value: .name(makeName("self")),
-                            attr: "canvas",
-                            ctx: .load,
-                            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                        )
-                    ),
-                    attr: layer,
-                    ctx: .load,
-                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                )
-            )
-        } else {
-            canvasAttr = .attribute(
-                Attribute(
-                    value: .name(makeName("self")),
-                    attr: "canvas",
-                    ctx: .load,
-                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                )
-            )
-        }
-        
-        // Process each canvas instruction
         for instruction in instructions {
-            let (instrStmts, instrBindings) = try generateSingleCanvasInstruction(instruction, canvasAttr: canvasAttr, callbackCounter: &callbackCounter)
-            statements.append(contentsOf: instrStmts)
-            bindings.append(contentsOf: instrBindings)
-        }
-        
-        return (statements, bindings)
-    }
-    
-    /// Generate a single canvas instruction
-    private func generateSingleCanvasInstruction(_ instruction: KvCanvasInstruction, canvasAttr: PySwiftAST.Expression, callbackCounter: inout Int) throws -> ([Statement], [BindingInfo]) {
-        var statements: [Statement] = []
-        var bindings: [BindingInfo] = []
-        
-        // Check if instruction is context-only (no properties, like PushMatrix, PopMatrix)
-        let isContextOnly = instruction.properties.isEmpty
-        
-        if isContextOnly {
-            // Context instructions like PushMatrix, PopMatrix - just add them to canvas
-            // with self.canvas:
-            //     PushMatrix()
-            let instrCall = PySwiftAST.Expression.call(
-                Call(
-                    fun: .name(makeName(instruction.instructionType)),
-                    args: [],
-                    keywords: [],
-                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                )
-            )
+            var keywords: [Keyword] = []
+            for property in instruction.properties {
+                keywords.append(Keyword(arg: property.name, value: try canvasKeywordValue(property)))
+            }
             
-            let addToCanvas = PySwiftAST.Expression.call(
-                Call(
-                    fun: .attribute(
-                        Attribute(
-                            value: canvasAttr,
-                            attr: "add",
-                            ctx: .load,
-                            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                        )
-                    ),
-                    args: [instrCall],
-                    keywords: [],
-                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                )
-            )
-            statements.append(.expr(Expr(value: addToCanvas, lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil)))
-        } else {
-            // Instructions with properties - check if any need binding
-            let staticProps = instruction.properties.filter { !needsBinding($0) }
-            let bindingProps = instruction.properties.filter { needsBinding($0) }
+            let construction = PySwiftAST.Expression.call(Call(
+                fun: .name(makeName(instruction.instructionType)),
+                args: [],
+                keywords: keywords,
+                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+            ))
             
-            if bindingProps.isEmpty {
-                // All properties are static - create instruction directly
-                var keywords: [Keyword] = []
-                for property in staticProps {
-                    let keyword = Keyword(
-                        arg: property.name,
-                        value: try canvasPropertyValueToExpression(property)
-                    )
-                    keywords.append(keyword)
-                }
-                
-                let instrCall = PySwiftAST.Expression.call(
-                    Call(
-                        fun: .name(makeName(instruction.instructionType)),
-                        args: [],
-                        keywords: keywords,
-                        lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                    )
-                )
-                
-                let addToCanvas = PySwiftAST.Expression.call(
-                    Call(
-                        fun: .attribute(
-                            Attribute(
-                                value: canvasAttr,
-                                attr: "add",
-                                ctx: .load,
-                                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                            )
-                        ),
-                        args: [instrCall],
-                        keywords: [],
-                        lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                    )
-                )
-                statements.append(.expr(Expr(value: addToCanvas, lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil)))
-            } else {
-                // Some properties need binding - store instruction reference and create update method
-                let instrAttrName = "_canvas_\(instruction.instructionType.lowercased())_\(nameCounter.take())"
-                
-                // Create instruction with static properties only
-                var keywords: [Keyword] = []
-                for property in staticProps {
-                    let keyword = Keyword(
-                        arg: property.name,
-                        value: try canvasPropertyValueToExpression(property)
-                    )
-                    keywords.append(keyword)
-                }
-                
-                // Assign to variable: self._canvas_rect_ABC123 = Rectangle(...)
-                let instrCreation = Assign(
-                    targets: [.attribute(
-                        Attribute(
-                            value: .name(makeName("self")),
-                            attr: instrAttrName,
-                            ctx: .store,
-                            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                        )
-                    )],
-                    value: .call(
-                        Call(
-                            fun: .name(makeName(instruction.instructionType)),
-                            args: [],
-                            keywords: keywords,
-                            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                        )
-                    ),
-                    typeComment: nil,
+            let tracked = instruction.properties.filter { needsBinding($0) }
+            guard !tracked.isEmpty else {
+                body.append(.expr(Expr(value: construction, lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil)))
+                continue
+            }
+            
+            let attrName = "\(instruction.instructionType.lowercased())_\(nameCounter.take())"
+            body.append(.assign(Assign(
+                targets: [.attribute(Attribute(
+                    value: .name(makeName("self")),
+                    attr: attrName,
+                    ctx: .store,
                     lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                ))],
+                value: construction,
+                typeComment: nil,
+                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+            )))
+            
+            for property in tracked {
+                let (statements, infos) = generateCanvasPropertyBinding(
+                    property,
+                    instrVarName: "self.\(attrName)",
+                    callbackCounter: &callbackCounter
                 )
-                statements.append(.assign(instrCreation))
-                
-                // Add to canvas
-                let addToCanvas = PySwiftAST.Expression.call(
-                    Call(
-                        fun: .attribute(
-                            Attribute(
-                                value: canvasAttr,
-                                attr: "add",
-                                ctx: .load,
-                                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                            )
-                        ),
-                        args: [.attribute(
-                            Attribute(
-                                value: .name(makeName("self")),
-                                attr: instrAttrName,
-                                ctx: .load,
-                                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                            )
-                        )],
-                        keywords: [],
-                        lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                    )
-                )
-                statements.append(.expr(Expr(value: addToCanvas, lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil)))
-                
-                // Set binding properties and create bind() calls
-                for property in bindingProps {
-                    // Parse the expression to get the AST
-                    let (parsedExpr, _) = parsePropertyExpression(property)
-                    
-                    let valueExpr: PySwiftAST.Expression
-                    if let expr = parsedExpr {
-                        valueExpr = expr
-                    } else {
-                        valueExpr = try canvasPropertyValueToExpression(property)
-                    }
-                    
-                    // Set initial value: self._canvas_rect.pos = self.pos
-                    let setProperty = Assign(
-                        targets: [.attribute(
-                            Attribute(
-                                value: .attribute(
-                                    Attribute(
-                                        value: .name(makeName("self")),
-                                        attr: instrAttrName,
-                                        ctx: .load,
-                                        lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                                    )
-                                ),
-                                attr: property.name,
-                                ctx: .store,
-                                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                            )
-                        )],
-                        value: valueExpr,
-                        typeComment: nil,
-                        lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                    )
-                    statements.append(.assign(setProperty))
-                    
-                    // Create bind() calls for this property (one for each watched key)
-                    let (bindingStmts, bindingInfos) = generateCanvasPropertyBinding(property, instrVarName: "self.\(instrAttrName)", callbackCounter: &callbackCounter)
-                    statements.append(contentsOf: bindingStmts)
-                    bindings.append(contentsOf: bindingInfos)
-                }
+                updates.append(contentsOf: statements)
+                bindings.append(contentsOf: infos)
             }
         }
         
-        return (statements, bindings)
+        let block = With(
+            items: [WithItem(contextExpr: canvasTarget(layer: layer), optionalVars: nil)],
+            body: body,
+            typeComment: nil,
+            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+        )
+        return ([.withStmt(block)] + updates, bindings)
+    }
+    
+    /// `self.canvas`, `self.canvas.before`, or the same on the child widget
+    /// whose block we are in.
+    private func canvasTarget(layer: String?) -> PySwiftAST.Expression {
+        let canvas = Attribute(
+            value: .name(makeName(selfContext.name)),
+            attr: "canvas",
+            ctx: .load,
+            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+        )
+        guard let layer else { return .attribute(canvas) }
+        return .attribute(Attribute(
+            value: .attribute(canvas),
+            attr: layer,
+            ctx: .load,
+            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+        ))
+    }
+    
+    /// The instruction's constructor argument. A tracked property needs its
+    /// resolved expression, not the placeholder string binding values carry.
+    private func canvasKeywordValue(_ property: KvProperty) throws -> PySwiftAST.Expression {
+        if needsBinding(property), let parsed = parsePropertyExpression(property).0 {
+            return parsed
+        }
+        return try canvasPropertyValueToExpression(property)
     }
     
     /// Generate binding for a canvas instruction property (e.g., pos: self.pos)

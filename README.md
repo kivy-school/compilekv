@@ -203,6 +203,31 @@ class itself for one in your `.py` -- `title = StringProperty("")` binds,
 from outside the module cannot be checked, so it is assumed bindable. In a
 mixed expression the bindable names are bound and the rest are read once.
 
+### Canvas
+
+A canvas layer becomes a `with` block, the way it is written by hand:
+
+```kv
+<Card>:
+    canvas.before:
+        Color:
+            rgba: (1, 0, 0, 1)
+        Rectangle:
+            pos: self.pos
+            size: self.size
+```
+
+```python
+with self.canvas.before:
+    Color(rgba=(1, 0, 0, 1))
+    self.rectangle_1 = Rectangle(pos=self.pos, size=self.size)
+self.bind(pos=_callback_1, size=_callback_2)
+```
+
+An instruction whose properties track something is named so the bindings have
+an object to update; the rest stay anonymous. Child widgets get their own
+canvas blocks, where `self` is that child.
+
 ### Factory registration
 
 Every generated class is registered, so other KV files and `Builder` can
