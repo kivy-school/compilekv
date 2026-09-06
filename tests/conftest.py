@@ -46,3 +46,46 @@ def project(tmp_path):
     nested.mkdir()
     (nested / "canvas.kv").write_text(CANVAS_KV)
     return tmp_path
+
+
+@pytest.fixture
+def fake_kivy(monkeypatch):
+    """Enough of kivy in sys.modules to import and run generated code."""
+    import sys
+    import types
+
+    class Widget:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+            self.children = []
+            self.ids = types.SimpleNamespace()
+            self.width = 0
+
+        def add_widget(self, widget):
+            self.children.append(widget)
+
+        def clear_widgets(self):
+            self.children.clear()
+
+        def bind(self, **kwargs):
+            pass
+
+        def unbind(self, **kwargs):
+            pass
+
+        def setter(self, name):
+            return lambda *args: None
+
+    factory = types.SimpleNamespace(register=lambda *args, **kwargs: None)
+    for name, attrs in {
+        "kivy": {},
+        "kivy.uix": {},
+        "kivy.uix.boxlayout": {"BoxLayout": Widget},
+        "kivy.uix.label": {"Label": Widget},
+        "kivy.factory": {"Factory": factory},
+    }.items():
+        module = types.ModuleType(name)
+        module.__dict__.update(attrs)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    return Widget

@@ -1079,9 +1079,6 @@ public struct KvToPyClassGenerator {
         let hasInit = !rule.properties.isEmpty || !rule.children.isEmpty || hasCanvas
         if hasInit {
             body.append(try generateInitMethod(rule, baseClasses: baseClasses, className: className))
-        } else if body.isEmpty {
-            // Empty class needs pass statement
-            body.append(.pass(Pass(lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil)))
         }
         
         // Add __del__ method if we have __init__ (which always initializes self._bindings)
@@ -1094,6 +1091,12 @@ public struct KvToPyClassGenerator {
             if let handlerMethod = try generateEventHandlerMethod(handler) {
                 body.append(handlerMethod)
             }
+        }
+        
+        // A rule with nothing in it still has to be a valid class body. The
+        // blank line above does not count as content.
+        if !body.contains(where: { if case .blank = $0 { return false } else { return true } }) {
+            body.append(.pass(Pass(lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil)))
         }
         
         // Fold the generated members into the class the author wrote, rather
@@ -1309,6 +1312,53 @@ public struct KvToPyClassGenerator {
         return false
     }
     
+    /// Assign the rule's own properties, then bind the reactive ones.
+    private func appendProperties(_ properties: [KvProperty], to body: inout [Statement]) throws {
+        for property in properties {
+            if needsBinding(property) {
+                body.append(try generatePropertyBinding(property))
+            } else {
+                body.append(.assign(Assign(
+                    targets: [.attribute(Attribute(
+                        value: .name(makeName("self")),
+                        attr: property.name,
+                        ctx: .store,
+                        lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                    ))],
+                    value: try propertyValueToExpression(property),
+                    typeComment: nil,
+                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                )))
+            }
+        }
+        
+        // Bind calls come after the assignments, so the initial values are all
+        // in place before anything can fire.
+        for property in properties {
+            if needsBinding(property), let bindCall = generateBindingCall(property) {
+                body.append(bindCall)
+            }
+        }
+    }
+    
+    /// Every id in the widget tree, at any depth.
+    private func collectIds(in children: [KvWidget]) -> Swift.Set<String> {
+        var ids = Swift.Set<String>()
+        for child in children {
+            if let id = child.id { ids.insert(id) }
+            ids.formUnion(collectIds(in: child.children))
+        }
+        return ids
+    }
+    
+    /// The names a property value reads.
+    private func referencedNames(_ property: KvProperty) throws -> Swift.Set<String> {
+        if let expr = parsePropertyExpression(property).0 {
+            return namesUsed(in: expr)
+        }
+        return namesUsed(in: try propertyValueToExpression(property))
+    }
+    
     private func generateInitMethod(_ rule: KvRule, baseClasses: [String], className: String) throws -> Statement {
         var body: [Statement] = []
         var bindings: [BindingInfo] = []  // Track bindings for __del__
@@ -1385,37 +1435,18 @@ public struct KvToPyClassGenerator {
             body.append(.assign(getAppCall))
         }
         
+        // A rule property can name a child by id -- `width: header_box_layout.width`
+        // -- and in KV the order does not matter. In Python it does: the
+        // variable does not exist until the tree below has been built, so
+        // those properties are held back until it has.
+        let childIds = collectIds(in: rule.children)
+        let dependsOnAChild = try rule.properties.map { try !referencedNames($0).isDisjoint(with: childIds) }
+        let immediate = zip(rule.properties, dependsOnAChild).filter { !$0.1 }.map(\.0)
+        let deferred = zip(rule.properties, dependsOnAChild).filter { $0.1 }.map(\.0)
+        
         // Set properties (self.property = value)
         // Event handlers are in rule.handlers, not rule.properties
-        for property in rule.properties {
-            if needsBinding(property) {
-                // Generate binding with initial value and bind call
-                body.append(try generatePropertyBinding(property))
-            } else {
-                // Simple assignment
-                let assignment = Assign(
-                    targets: [.attribute(
-                        Attribute(
-                            value: .name(makeName("self")),
-                            attr: property.name,
-                            ctx: .store,
-                            lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                        )
-                    )],
-                    value: try propertyValueToExpression(property),
-                    typeComment: nil,
-                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-                )
-                body.append(.assign(assignment))
-            }
-        }
-        
-        // Add bind() calls for reactive properties after all initialization
-        for property in rule.properties {
-            if needsBinding(property), let bindCall = generateBindingCall(property) {
-                body.append(bindCall)
-            }
-        }
+        try appendProperties(immediate, to: &body)
         
         // Add event handler bindings (on_press, on_release, etc.)
         for handler in rule.handlers {
@@ -1430,6 +1461,9 @@ public struct KvToPyClassGenerator {
             body.append(contentsOf: childStmts)
             bindings.append(contentsOf: childBindings)
         }
+        
+        // Now the ids they name are real variables.
+        try appendProperties(deferred, to: &body)
         
         // Add canvas instructions if present
         if let canvasBefore = rule.canvasBefore, !canvasBefore.instructions.isEmpty {
