@@ -497,11 +497,26 @@ public struct KvToPyClassGenerator {
         let registrations = factoryRegistrations(for: generatedClasses)
         let needsFactory = !external.isEmpty || !registrations.isEmpty
         
+        // A `#:set` is substituted into this file's own code, but KV files
+        // loaded later still expect the name, so publish it too. Built before
+        // the imports below, because a published value can be the only thing
+        // in the file that uses dp() or sp().
+        let idmap = globalIdmapAssignments()
+        
         var imports = generateImports(for: referenced.subtracting(external))
         
         imports.append(contentsOf: directiveImports())
         
-        // Populated while the classes above were generated.
+        if !idmap.isEmpty {
+            imports.append(.importFrom(ImportFrom(
+                module: "kivy.lang.parser",
+                names: [Alias(name: "global_idmap", asName: nil)],
+                level: 0,
+                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+            )))
+        }
+        
+        // Populated while the classes above and the values above were built.
         if !metrics.used.isEmpty {
             imports.append(.importFrom(ImportFrom(
                 module: "kivy.metrics",
@@ -515,18 +530,6 @@ public struct KvToPyClassGenerator {
             imports.append(.importFrom(ImportFrom(
                 module: "kivy.factory",
                 names: [Alias(name: "Factory", asName: nil)],
-                level: 0,
-                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
-            )))
-        }
-        
-        // A `#:set` is substituted into this file's own code, but KV files
-        // loaded later still expect the name, so publish it too.
-        let idmap = globalIdmapAssignments()
-        if !idmap.isEmpty {
-            imports.append(.importFrom(ImportFrom(
-                module: "kivy.lang.parser",
-                names: [Alias(name: "global_idmap", asName: nil)],
                 level: 0,
                 lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
             )))

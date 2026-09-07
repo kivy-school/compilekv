@@ -241,3 +241,17 @@ def test_the_value_is_substituted_not_quoted(compiler):
 
 def test_no_import_when_the_file_declares_nothing(compiler):
     assert "global_idmap" not in compiler.compile_source("<Item@Label>:\n    text: 'x'\n")
+
+
+def test_a_file_that_only_declares_constants_still_imports_sp(compiler):
+    """A published value can be the only thing in the file that uses sp()."""
+    out = compiler.compile_source("#:set plex_12 sp(12)\n#:set plex_16 sp(16)\n")
+    ast.parse(out)
+    assert "from kivy.metrics import sp" in out
+    assert 'global_idmap["plex_12"] = sp(12)' in out
+
+
+def test_a_declared_constant_using_dp(compiler):
+    out = compiler.compile_source("#:set gap dp(8)\n")
+    ast.parse(out)
+    assert "from kivy.metrics import dp" in out
