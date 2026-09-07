@@ -193,3 +193,51 @@ def test_a_backslash_inside_a_string_is_left_alone(compiler):
     generated = compiler.compile_source(kv)
     ast.parse(generated)
     assert "\\\\n" in generated
+
+
+# --- Publishing constants for KV loaded later -----------------------------
+
+
+THEME_KV = "#:set plex_16 sp(16)\n#:set BASE_PADDING 25\n\n<Item@BoxLayout>:\n    font_size: plex_16\n"
+
+
+@pytest.fixture
+def published(compiler):
+    out = compiler.compile_source(THEME_KV)
+    ast.parse(out)
+    return out
+
+
+def test_declared_constants_reach_global_idmap(published):
+    assert 'global_idmap["plex_16"] = sp(16)' in published
+    assert 'global_idmap["BASE_PADDING"] = 25' in published
+
+
+def test_global_idmap_is_imported(published):
+    assert "from kivy.lang.parser import global_idmap" in published
+
+
+def test_the_assignments_follow_the_imports(published):
+    header = published.split("class Item")[0]
+    assert header.index("import global_idmap") < header.index('global_idmap["BASE_PADDING"]')
+
+
+def test_a_file_that_only_uses_a_constant_does_not_publish_it(compiler):
+    """The file that declares `#:set` owns publishing it."""
+    out = compiler.compile_source("<Other@BoxLayout>:\n    font_size: plex_16\n", "", THEME_KV)
+    assert "global_idmap" not in out
+
+
+def test_publishing_is_idempotent(compiler, published):
+    again = compiler.compile_source(THEME_KV, published)
+    assert again == published
+    assert again.count('global_idmap["plex_16"]') == 1
+
+
+def test_the_value_is_substituted_not_quoted(compiler):
+    out = compiler.compile_source("#:set brand (1, 0, 0, 1)\n\n<Item@Label>:\n    color: brand\n")
+    assert 'global_idmap["brand"] = (1, 0, 0, 1)' in out
+
+
+def test_no_import_when_the_file_declares_nothing(compiler):
+    assert "global_idmap" not in compiler.compile_source("<Item@Label>:\n    text: 'x'\n")

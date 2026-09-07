@@ -221,6 +221,19 @@ from kivy.metrics import sp
 self.font_size = sp(16)
 ```
 
+The file that declares a `#:set` also publishes it, so `.kv` files loaded at
+runtime still resolve the name -- Builder only knows the directives from files
+it has already parsed:
+
+```python
+from kivy.lang.parser import global_idmap
+
+global_idmap["plex_16"] = sp(16)
+```
+
+Only the declaring file does this; one that merely uses the constant gets the
+substituted value and nothing else.
+
 `#:import` becomes a real import, but only for the names the generated code
 actually reads:
 

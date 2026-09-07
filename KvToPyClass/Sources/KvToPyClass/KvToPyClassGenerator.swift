@@ -427,6 +427,8 @@ public struct KvToPyClassGenerator {
     /// Builder substitutes them at load time; generated Python has no Builder,
     /// so they are substituted here.
     private let constants: [String: String]
+    /// The `#:set` names this file declares, as opposed to ones it merely uses.
+    private let declaredConstants: [String: String]
     /// `#:import alias package.path`, which KV resolves into its own namespace.
     /// Generated Python needs a real import for each one it uses.
     private let importDirectives: [String: String]
@@ -457,6 +459,16 @@ public struct KvToPyClassGenerator {
         }
         self.constants = constants
         self.importDirectives = imports
+        
+        // Only what this file declares. The shared ones belong to whichever
+        // file declared them, and it publishes those itself.
+        var declared: [String: String] = [:]
+        for directive in module.directives {
+            if case .set(let name, let value, _) = directive {
+                declared[name] = value
+            }
+        }
+        self.declaredConstants = declared
     }
 
     public init(module: KvModule, existing: PythonModuleInfo, sharedDirectives: [KvDirective] = []) {
@@ -508,13 +520,28 @@ public struct KvToPyClassGenerator {
             )))
         }
         
+        // A `#:set` is substituted into this file's own code, but KV files
+        // loaded later still expect the name, so publish it too.
+        let idmap = globalIdmapAssignments()
+        if !idmap.isEmpty {
+            imports.append(.importFrom(ImportFrom(
+                module: "kivy.lang.parser",
+                names: [Alias(name: "global_idmap", asName: nil)],
+                level: 0,
+                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+            )))
+        }
+        
         let aliases = external.sorted().map(factoryAlias)
         
         let statements = existingBody.isEmpty
-            ? imports + aliases + generatedClasses + registrations
+            ? separateImportBlock(
+                in: imports + aliases + idmap + generatedClasses + registrations,
+                endingAt: imports.count
+              )
             : merge(
                 imports: imports,
-                aliases: aliases,
+                aliases: aliases + idmap,
                 classes: generatedClasses,
                 registrations: registrations,
                 into: existingBody
@@ -539,6 +566,30 @@ public struct KvToPyClassGenerator {
     private func isDefinedHere(_ name: String) -> Bool {
         if pythonClasses.contains(where: { $0.name == name }) { return true }
         return module.rules.contains { resolvedClass(for: $0)?.name == name }
+    }
+    
+    /// `global_idmap["plex_16"] = sp(16)` for each `#:set` this file declares.
+    ///
+    /// Builder resolves `#:set` names only for files it has already loaded, so
+    /// a .kv loaded at runtime after this module would not see them otherwise.
+    private func globalIdmapAssignments() -> [Statement] {
+        declaredConstants.keys.sorted().compactMap { name in
+            guard let value = declaredConstants[name],
+                  let expr = parseValue(value) ?? parseAssignedExpression(value)
+            else { return nil }
+            recordMetrics(in: expr)
+            return .assign(Assign(
+                targets: [.subscriptExpr(Subscript(
+                    value: .name(makeName("global_idmap")),
+                    slice: .constant(makeConstant(.string(name))),
+                    ctx: .store,
+                    lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+                ))],
+                value: expr,
+                typeComment: nil,
+                lineno: 1, colOffset: 0, endLineno: nil, endColOffset: nil
+            ))
+        }
     }
     
     /// An import for each `#:import` alias the generated code actually reads.
@@ -660,11 +711,23 @@ public struct KvToPyClassGenerator {
         // A Factory alias is only needed for a name the file does not already
         // bind, whether by import, assignment or class definition.
         let boundAtModuleLevel = alreadyBound.union(assignedNames(in: body))
+        let published = idmapKeys(in: body)
         let newAliases = aliases.filter { statement in
-            guard case .assign(let assign) = statement,
-                  case .name(let target) = assign.targets.first
-            else { return true }
-            return !boundAtModuleLevel.contains(target.id)
+            guard case .assign(let assign) = statement, let target = assign.targets.first else {
+                return true
+            }
+            switch target {
+            case .name(let name):
+                return !boundAtModuleLevel.contains(name.id)
+            case .subscriptExpr(let subscriptNode):
+                // global_idmap["x"] = ... that is already there.
+                guard case .constant(let key) = subscriptNode.slice,
+                      case .string(let name) = key.value
+                else { return true }
+                return !published.contains(name)
+            default:
+                return true
+            }
         }
         
         var generated: [String: Statement] = [:]
@@ -699,6 +762,22 @@ public struct KvToPyClassGenerator {
         let insertAt = importInsertionPoint(in: result)
         result.insert(contentsOf: newImports + newAliases, at: insertAt)
         return separateImportBlock(in: result, endingAt: insertAt + newImports.count + newAliases.count)
+    }
+    
+    /// Keys the file already publishes as `global_idmap["key"] = ...`.
+    private func idmapKeys(in body: [Statement]) -> Swift.Set<String> {
+        var keys = Swift.Set<String>()
+        for statement in body {
+            guard case .assign(let assign) = statement,
+                  case .subscriptExpr(let target) = assign.targets.first,
+                  case .name(let object) = target.value,
+                  object.id == "global_idmap",
+                  case .constant(let key) = target.slice,
+                  case .string(let name) = key.value
+            else { continue }
+            keys.insert(name)
+        }
+        return keys
     }
     
     /// Names bound by a plain assignment, annotation, def or class.
