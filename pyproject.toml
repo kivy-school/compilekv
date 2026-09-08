@@ -1,6 +1,6 @@
 [project]
 name = "compilekv"
-version = "0.1.0"
+version = "0.0.0"
 description = "Compile Kivy KV files into Python classes using a Swift WebAssembly module"
 readme = "README.md"
 authors = [
