@@ -60,3 +60,28 @@ fastlane/report.xml
 fastlane/Preview.html
 fastlane/screenshots/**/*.png
 fastlane/test_output
+
+# Lock files -- resolved on demand, never committed
+uv.lock
+Package.resolved
+*.lock
+
+# Built wasm asset and Swift build artifacts
+src/compilekv/*.wasm
+CompileKvWasm/.build/
+KvToPyClass/.build/
+.swiftpm/
+
+# Stray files from mistyped swift/CLI invocations in KvToPyClass
+KvToPyClass/-
+KvToPyClass/-o
+KvToPyClass/--debug
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store

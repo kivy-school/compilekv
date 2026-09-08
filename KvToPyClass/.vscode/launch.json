@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:KvToPyClass}",
+            "name": "Debug kvtoclass",
+            "target": "kvtoclass",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug kvtoclass"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:KvToPyClass}",
+            "name": "Release kvtoclass",
+            "target": "kvtoclass",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release kvtoclass"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:KvToPyClass}",
+            "name": "Debug KvToPyClassCLI",
+            "target": "KvToPyClassCLI",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug KvToPyClassCLI"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:KvToPyClass}",
+            "name": "Release KvToPyClassCLI",
+            "target": "KvToPyClassCLI",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release KvToPyClassCLI"
+        }
+    ]
+}

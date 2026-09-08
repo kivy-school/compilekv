@@ -1,0 +1,23 @@
+<TestCanvas@BoxLayout>:
+    canvas:
+        # This is a comment
+        Color:
+            rgb: 0.07, 0.93, 0.67
+        Rectangle:
+            pos: self.pos
+            size: self.size
+    Label:
+        text: "This is a test canvas."
+    Label:
+        text: "This is a test canvas with a comment."
+    ScrollView:
+        BoxLayout:
+            orientation: "vertical"
+            FloatLayout:
+                BoxLayout:
+                    orientation: "vertical"
+            Image:
+                source: "path/to/image.png"
+            Switch:
+                active: False
+                            

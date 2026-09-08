@@ -1,0 +1,36 @@
+[project]
+name = "compilekv"
+version = "0.0.0"
+description = "Compile Kivy KV files into Python classes using a Swift WebAssembly module"
+readme = "README.md"
+authors = [
+    { name = "psychowasp", email = "psychowaspx@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "wasmtime>=25",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+compilekv = ["*.wasm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# conftest defines the shared KV fixtures the test modules import by name.
+pythonpath = ["tests"]
