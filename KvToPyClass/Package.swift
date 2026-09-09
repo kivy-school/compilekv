@@ -18,9 +18,9 @@ let package = Package(
     ],
     dependencies: [
         // Local dependency on SwiftyKvLang parser
-        .package(url: "https://github.com/Py-Swift/SwiftyKvLang.git", branch: "master"),
+        .package(url: "https://github.com/kivy-school/SwiftyKvLang.git", exact: "0.0.0"),
         // PySwiftAST for generating Python code
-        .package(url: "https://github.com/Py-Swift/PySwiftAST.git", branch: "master")
+        .package(url: "https://github.com/Py-Swift/PySwiftAST.git", exact: "0.0.1")
     ],
     targets: [
         .target(
