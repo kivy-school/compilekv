@@ -8,7 +8,7 @@ let useLocalSwiftyKvLang = false
 
 let swiftyKvLang: Package.Dependency = useLocalSwiftyKvLang
     ? .package(path: "../../SwiftyKvLang")
-    : .package(url: "https://github.com/kivy-school/SwiftyKvLang.git", branch: "master")
+    : .package(url: "https://github.com/kivy-school/SwiftyKvLang.git", .upToNextMinor(from: "0.0.1"))
 
 let package = Package(
     name: "KvToPyClass",
