@@ -77,6 +77,9 @@ print(pythonCode)
 ## Features
 
 - ✅ Dynamic class definitions (`<MyClass@BaseClass>`)
+- ✅ Conditional blocks (`if`/`else`, `try`/`expect`) as re-evaluating methods
+- ✅ `name: |` code blocks as functions (value blocks re-run on change)
+- ✅ `#:from module import name [as alias]` and `#:mode` directives
 - ✅ Property assignments
 - ✅ Event handler bindings (`on_press`, etc.)
 - ✅ Child widget creation
@@ -114,6 +117,29 @@ print(pythonCode)
                      │  PySwiftAST  │─────▶│ Python Code  │
                      │  (Python AST)│      │  (.py file)  │
                      └──────────────┘      └──────────────┘
+```
+
+### Source layout
+
+`KvToPyClassGenerator` is only the entry point. The work is split by what is
+being produced, one class per concern, all sharing a `GenerationContext`:
+
+```
+Sources/KvToPyClass/
+├── KvToPyClassGenerator.swift   public facade: init, generate()
+├── GenerationContext.swift      module, existing .py, directives, current scope
+├── Content/                     the model: BindableKey, BindingInfo, KvDirectives,
+│                                KvClassProperty (one class per Kivy property type),
+│                                CanvasLayer, MethodScope, RuleContext, SelfContext
+├── Dialect/                     WidgetDialect protocol + KivyDialect (widget names,
+│                                modules, property types); `#:mode` picks one
+├── Analysis/                    ValueParser, PropertyResolver, ModuleAnalysis,
+│                                expression rewriting, statement queries
+├── Generators/                  KvGenerators (the bundle) and one generator each for
+│                                the module, imports, Factory, merging, the class,
+│                                __init__, __del__, property bindings, event handlers,
+│                                the widget tree, canvas, blocks and conditionals
+└── PyAST/Py.swift               small builders for PySwiftAST nodes
 ```
 
 ## Dependencies

@@ -58,13 +58,21 @@ def test_a_generated_object_property_is_bindable(compiler):
     assert 'self.bind(custom=label_1.setter("text"))' in generated
 
 
-def test_a_constant_rule_property_is_a_plain_attribute(compiler):
-    """No ObjectProperty is declared for a constant, so there is nothing to bind."""
+def test_a_watched_constant_rule_property_becomes_a_property(compiler):
+    """Builder would create_property() it, so a binding on it is legal."""
     kv = "<Card@BoxLayout>:\n    custom: 1\n    Label:\n        text: root.custom\n"
     generated = compiler.compile_source(kv)
-    assert "ObjectProperty" not in generated
+    assert "custom = ObjectProperty(None)" in generated
+    assert "self.custom = 1" in generated
     assert "label_1.text = self.custom" in generated
-    assert "self.bind(" not in generated
+    assert 'self.bind(custom=label_1.setter("text"))' in generated
+
+
+def test_an_unwatched_constant_rule_property_stays_plain(compiler):
+    kv = "<Card@BoxLayout>:\n    custom: 1\n    Label:\n        text: 'x'\n"
+    generated = compiler.compile_source(kv)
+    assert "ObjectProperty" not in generated
+    assert "self.custom = 1" in generated
 
 
 def test_root_on_the_rule_itself(compiler):

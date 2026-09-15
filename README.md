@@ -245,7 +245,21 @@ actually reads:
 from carbonkivy.utils import get_font_name
 ```
 
-KV puts both kinds in one namespace shared by everything Builder loads, so the
+`#:from` is the same thing spelled the Python way, alias included:
+
+```kv
+#:from kivy.metrics import sp as scaled
+```
+
+```python
+from kivy.metrics import sp as scaled
+```
+
+`#:mode default|carbonkivy|nucleant|swiftui` tags a file with a generator
+dialect. It is read (`KvToPyClassGenerator.mode`) but nothing branches on it
+yet; it is per file and not shared between files.
+
+KV puts `#:set`, `#:import` and `#:from` in one namespace shared by everything Builder loads, so the
 whole project is read before anything is written. `Project.scan(roots)` walks
 every `.kv` -- and every `.py`, since KV passed to `Builder.load_string()`
 carries directives the `.kv` files rely on -- and `compile_tree` and
@@ -286,6 +300,115 @@ self.bind(pos=_callback_1, size=_callback_2)
 An instruction whose properties track something is named so the bindings have
 an object to update; the rest stay anonymous. Child widgets get their own
 canvas blocks, where `self` is that child.
+
+### Conditional blocks
+
+`if`/`else` and `try`/`expect` blocks are an extension to KV: a branch holds
+anything a rule body can, and applies only while its condition holds.
+
+```kv
+<MyWidget@BoxLayout>:
+    if self.disabled:
+        Label:
+            text: "no press"
+    else:
+        Button:
+            text: "press me"
+    try:
+        Button:
+            text: "success"
+    expect:
+        Label:
+            text: "failed"
+```
+
+Each block becomes a method that builds the branch that applies, and a reset
+that takes the previous one down again. `__init__` evaluates it once and binds
+it to whatever the condition watches, so it re-runs when that changes:
+
+```python
+def __init__(self, **kwargs):
+    ...
+    self._conditional_0(self)
+    _callback_0 = lambda *args: self._conditional_0(self)
+    self.bind(disabled=_callback_0)
+
+def _conditional_0(self, parent, *args):
+    self._conditional_0_reset()
+    if self.disabled:
+        label_1 = Label(text="no press")
+        parent.add_widget(label_1)
+        self._conditional_0_widgets.append(label_1)
+    else:
+        ...
+
+def _conditional_0_reset(self):
+    # remove the widgets, unbind the callbacks and drop the canvas
+    # groups the previous evaluation added
+```
+
+`parent` is the widget the block sits in, so a block inside a child widget's
+body adds to that child and watches that child's `self`. A `try` branch that
+raises while building is cleared before the `expect` branch goes in. A name
+the condition watches on the rule root that is not a Kivy property --
+`if self.compact:` -- is declared as an `ObjectProperty`, since a plain
+attribute cannot be bound. Branch canvas instructions go into an
+`InstructionGroup` so they can be removed as one.
+
+Properties set in a branch (`opacity: 0.5` under `if self.disabled:`) are
+applied when the branch is taken and left as they are when it is not; KV has
+no notion of un-setting a property.
+
+### Code blocks
+
+`name: |` opens a block, the way a multi-line command does in a GitHub Actions
+workflow: the indented lines below are Python statements, not an expression.
+A handler block becomes a function body; a value block becomes a function
+whose return value is the property, re-run whenever a watched key changes.
+
+```kv
+<StatusLabel@Label>:
+    error: False
+    text: |
+        if self.error:
+            return "failed"
+        return "ok"
+    on_error: |
+        if self.error:
+            self.font_size = 18
+        else:
+            self.font_size = 14
+```
+
+```python
+def __init__(self, **kwargs):
+    ...
+    def _value_1():
+        if self.error:
+            return "failed"
+        return "ok"
+
+    self.text = _value_1()
+    _callback_0 = lambda *args: setattr(self, "text", _value_1())
+    self.bind(error=_callback_0)
+    self.bind(on_error=self._on_error_handler)
+
+def _on_error_handler(self, instance):
+    if self.error:
+        self.font_size = 18
+    else:
+        self.font_size = 14
+```
+
+A handler block on a child widget becomes a nested function in `__init__`,
+bound on that child. Inside any block `root`, `self`, ids, `app` and `#:set`
+names resolve as they do in an expression. A block that is not valid Python
+is an error, not a `pass`.
+
+A name a rule assigns and then watches -- `error: False` above, or
+`if self.compact:` -- is declared as an `ObjectProperty`, which is what
+Builder's `create_property` would have made of it; a plain attribute cannot
+be bound. Names a rule only reads are left to the hand written class.
 
 ### Factory registration
 

@@ -26,12 +26,13 @@ def source_path_for(kv_path: str | Path) -> Path:
     return Path(kv_path).with_suffix(".py")
 
 
-# `#: set` with a space is as valid as `#:set`.
-SHARED_DIRECTIVE = re.compile(r"^#:\s*(set|import)\s+\S+\s+\S.*$")
+# `#: set` with a space is as valid as `#:set`. `#:mode` is deliberately
+# left out: it describes one file, not the project.
+SHARED_DIRECTIVE = re.compile(r"^#:\s*(set|import|from)\s+\S+\s+\S.*$")
 
 
 def collect_directives(paths: Iterable[str | Path]) -> str:
-    """The `#:set` and `#:import` lines from every given file.
+    """The `#:set`, `#:import` and `#:from` lines from every given file.
 
     KV puts both in one namespace shared by everything Builder loads -- a
     theme file defines the constants, one widget file imports a helper another

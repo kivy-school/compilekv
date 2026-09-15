@@ -1,6 +1,15 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
+/// Build against the SwiftyKvLang checkout next door instead of GitHub.
+/// Flip to true while changing the parser and the generator together;
+/// flip back before committing, since CI only has this repository.
+let useLocalSwiftyKvLang = true
+
+let swiftyKvLang: Package.Dependency = useLocalSwiftyKvLang
+    ? .package(path: "../../SwiftyKvLang")
+    : .package(url: "https://github.com/Py-Swift/SwiftyKvLang.git", branch: "master")
+
 let package = Package(
     name: "KvToPyClass",
     platforms: [
@@ -17,8 +26,8 @@ let package = Package(
         )
     ],
     dependencies: [
-        // Local dependency on SwiftyKvLang parser
-        .package(url: "https://github.com/Py-Swift/SwiftyKvLang.git", branch: "master"),
+        // SwiftyKvLang parser, from GitHub or the local checkout (see above)
+        swiftyKvLang,
         // PySwiftAST for generating Python code
         .package(url: "https://github.com/Py-Swift/PySwiftAST.git", branch: "master")
     ],
