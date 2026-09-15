@@ -29,7 +29,7 @@ let package = Package(
         // SwiftyKvLang parser, from GitHub or the local checkout (see above)
         swiftyKvLang,
         // PySwiftAST for generating Python code
-        .package(url: "https://github.com/Py-Swift/PySwiftAST.git", branch: "master")
+        .package(url: "https://github.com/Py-Swift/PySwiftAST.git", exact: "0.0.1")
     ],
     targets: [
         .target(
