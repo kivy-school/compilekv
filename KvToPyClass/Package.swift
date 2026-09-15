@@ -4,11 +4,11 @@ import PackageDescription
 /// Build against the SwiftyKvLang checkout next door instead of GitHub.
 /// Flip to true while changing the parser and the generator together;
 /// flip back before committing, since CI only has this repository.
-let useLocalSwiftyKvLang = true
+let useLocalSwiftyKvLang = false
 
 let swiftyKvLang: Package.Dependency = useLocalSwiftyKvLang
     ? .package(path: "../../SwiftyKvLang")
-    : .package(url: "https://github.com/Py-Swift/SwiftyKvLang.git", branch: "master")
+    : .package(url: "https://github.com/kivy-school/SwiftyKvLang.git", .upToNextMinor(from: "0.0.1"))
 
 let package = Package(
     name: "KvToPyClass",
